@@ -35,7 +35,7 @@ def read_nxs_file(filename):
         - 'start_time': The start time of the scan in wall clock.
         - 'scan_command': The command used to initiate the scan.
     """
-    load_dotenv('/home/ava/Documents/2025/GALAXIES25/Analysis/soleil25a/.env')  # Adjust this path to where your .env file is
+    load_dotenv('/home/ava/Documents/2025/GALAXIES25/Analysis/soleil25a_Ava/.env')  # Adjust this path to where your .env file is
     data_path = os.environ.get('DATA_PATH')
 
     fullpath = os.path.join(data_path, filename)

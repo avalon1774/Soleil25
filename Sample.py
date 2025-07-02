@@ -8,7 +8,7 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 from galaxies import read_nxs_file
-from galaxies_ava import
+#from galaxies_ava import
 import logging
 
 """ Structure of data: 
