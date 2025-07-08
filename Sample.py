@@ -6,6 +6,10 @@ from typing import List, Dict, Optional
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
+from lmfit.models import PolynomialModel, GaussianModel, LinearModel, LorentzianModel, VoigtModel
+import pandas as pd
+import logging
+
 
 from galaxies import read_nxs_file
 #from galaxies_ava import
@@ -31,6 +35,7 @@ class BaseScan:
     number: int
     filename: str
     sample: 'Sample'
+
     data: Optional[Dict] = None
     type: str = None
     energy: Optional[np.ndarray] = None
@@ -59,7 +64,6 @@ class BaseScan:
             except Exception as e:
                 logger.error("Failed to load data from %s: %s", self.filename, str(e))
                 self.data = None
-
     def define_energy(self,energy: Optional[np.ndarray] = None):
         if energy is not None:
             self.energy = energy
@@ -69,7 +73,6 @@ class BaseScan:
                 self.energy = self.data['energies']
             except:
                 logger.error("no energy data found for sample %i", self.number)
-
     def detect_type(self):
 
         if not self.data:
@@ -89,7 +92,6 @@ class BaseScan:
             self.scan_type = 'Unknown'
 
         return self.scan_type
-
     def auto_detect_ROI(self, threshold: float = 0.4, Plot = True, min_region_width: int=5):
 
         pilatus_image = self.data['images']
@@ -147,7 +149,7 @@ class BaseScan:
 @dataclass
 class XASScan(BaseScan):
     def plot(self):
-        # XAS-specific processing
+        # plot the scan and return it, to be used as comparison
         self.load_data()
         # Process Amptek data
         pass
@@ -158,29 +160,219 @@ class XASScan(BaseScan):
 
 @dataclass
 class RIXSMap(BaseScan):
+    calibration_line: Optional[np.ndarray] = None  # Store slope and intercept
+    calibration_data: Optional[pd.DataFrame] = None  # Store detailed fit results
+    calibration_roi: Optional[tuple] = None
 
     def process(self):
-        # RIXS-specific processing
-        self.load_data()
-        # Process image data
+        # combination of steps to process a map efficiently
         pass
 
-    def analyze_map(self):
-        # RIXS-specific method
+    def slice(self, absorption_energy: Optional[np.ndarray]):
+        """returns the slices of the map at energies specified in absorption_energy list"""
+        if absorption_energy is None:
+            absorption_energy = [2460,2469.5,2471,2472] #default values
+
+
+
+    def energy_calibration(self, roi, vmax=None, plot=True):
+        """calibrate energy axis by fitting the gaussians to the elastic peaks, that are isolated
+        somewhere below the given linear line that should be around elastic peak
+        TODO: save elastic peaks or, maybe fit parameters, for later removal
+        returns: parameter of the elastic line
+        """
+
+        pilatus_image = self.data['images']
+        energy = self.data['energies']
+        filename = self.filename
+
+        pilatus_sum = np.sum(pilatus_image[:, :, roi[0]:roi[1]], axis=2)
+
+        line_ends = ((2460,2480),(np.argmax(pilatus_sum[:,0]),180))
+
+
+        approx_line_ene2pix = np.polyfit(line_ends[0], line_ends[1], 1)
+        pixel_axis = np.arange(0, 195)
+
+        if plot:
+            fig, axs = plt.subplots(3, 2, figsize=(15, 15))
+            ax = axs[0, 0]
+            ax.set_title(f"Sum ROI {roi[0]}-{roi[1]} of {filename}")
+            g1 = ax.pcolormesh(np.arange(0, 195), energy, pilatus_sum, vmax=vmax)
+            plt.colorbar(g1, ax=ax)
+            ax.set_xlabel("pixel")
+            ax.set_ylabel("Incident Energy [eV]")
+            ax.set_xlim(0, 195)
+            ax.plot(np.polyval(approx_line_ene2pix, energy), energy, color='red')
+
+        fit_results = []
+        for j, (e, data) in enumerate(zip(energy, pilatus_sum)):
+
+            x_max = int(np.polyval(approx_line_ene2pix, e))  # at which pixel are we looking for elastic peak a
+            if x_max > data.shape[0] - 15:  # stop when we run out of pixels (elastic runs out)
+                continue
+            # presumed peakmaks 5 px left and right from the
+            # mask = [x_max-5:x_max+5]
+
+            rng = 20
+            x = np.linspace(0, len(pixel_axis), len(pixel_axis))[x_max - rng + 5:x_max + rng]
+            y = data[x_max - rng + 5:x_max + rng]
+
+            background_order = 1
+            back_model = PolynomialModel(degree=background_order, prefix='bkg_')
+            gauss_model = GaussianModel(prefix='g_')
+            model = back_model + gauss_model
+            params = model.make_params()
+
+            for i in range(background_order + 1):
+                params[f'bkg_c{i}'].set(value=1)
+
+            params['g_amplitude'].set(value=np.max(y), min=0)
+            params['g_center'].set(value=x[np.argmax(y)])
+            params['g_sigma'].set(value=0.5)
+
+            result = model.fit(y, params, x=x)
+
+            fit_results.append({
+                'energy': e,
+                'g_amplitude': result.params['g_amplitude'].value,
+                'g_center': result.params['g_center'].value,
+                'g_fwhm': 2.3548 * result.params['g_sigma'].value,
+                'g_intensities': result.params['g_height'].value,
+                #        'bkg_c0': result.params['bkg_c0'].value,
+                #        'bkg_c1': result.params['bkg_c1'].value,
+            })
+
+            if plot and j % 50 == 0:
+                ax = axs[0, 1]
+                ax.plot(x, y, color='black')
+                # ax.plot(x_fit, result.best_fit, color = 'red', label = 'fit')
+                # ax.plot(x, result.eval_components(x=x)['bkg_'], '--', label='Background')
+
+                ax.plot(x, result.eval_components(x=x)['g_'], '--', label=f'Gaussian at {e:.2f} eV')
+                ax.axvline(x_max, color='gray', alpha=0.5, linestyle='--'
+                           )
+                ax.set_title(f'Fit to elastic peak')
+                ax.set_xlabel('energy (px)')
+                ax.set_ylabel(f'intesity')
+                ax.grid(visible=True, alpha=0.3)
+                ax.legend()
+
+        fit_data = pd.DataFrame(fit_results)
+        # print(fit_data)
+
+        lin_model = LinearModel(prefix='lin_')
+        params = lin_model.make_params()
+        result = lin_model.fit(fit_data['energy'], params, x=fit_data['g_center'])
+
+        slope = result.params['lin_slope'].value
+        slope_err = result.params['lin_slope'].stderr
+        intercept = result.params['lin_intercept'].value
+        intercept_err = result.params['lin_intercept'].stderr
+
+        fit_text = (f"Slope = {slope:.4f} ± {slope_err:.4f}\n"
+                    f"Intercept = {intercept:.4f} ± {intercept_err:.4f}")
+
+        line = np.array([result.params['lin_slope'].value, result.params['lin_intercept'].value])
+        fwhm_e = fit_data['g_fwhm'] * result.params['lin_slope'].value
+        mean = np.mean(fwhm_e)
+        fit_data['e_fwhm'] = fwhm_e
+
+        if plot:
+            ax = axs[1, 0]
+            ax.set_title('Enegy calibration' + filename)
+            ax.scatter(fit_data['g_center'], fit_data['energy'], color='black', s=10)
+            ax.plot(fit_data['g_center'], result.best_fit, color='red', label='fit')
+            ax.set_title(f'Elastic calibration {filename}')
+            ax.set_xlabel('Y pixels')
+            ax.grid(visible=True, alpha=0.3)
+            ax.set_ylabel(f'Energy (eV)')
+            ax.text(0.05, 0.95, fit_text, transform=ax.transAxes,
+                    fontsize=12, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+            ax = axs[1, 1]
+            ax.set_title('Gauss FWHM' + filename)
+            ax.plot(calibrate_energy_ax(fit_data['g_center'], line),
+                    fit_data['g_fwhm'] * result.params['lin_slope'].value, color='black', label='fit')
+
+            ax.set_title(f'Elastic peak width')
+            ax.grid(visible=True, alpha=0.3)
+            ax.axhline(y=mean, color='r', linestyle='--', alpha=0.7)
+            ax.text(0.05, 0.95, f"Mean FWHM = {mean:.4f}", transform=ax.transAxes,
+                    fontsize=12, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+            ax.set_xlabel('Incident Energy (eV)')
+            ax.set_ylabel(f'FWHM (eV)')
+
+            ax = axs[2, 0]
+            ax.plot(fit_data['energy'], fit_data['g_intensities'], color='black')
+            ax.set_title('Elastic peak Intensity')
+            ax.set_xlabel('Incident Energy (eV)')
+            ax.set_ylabel('Intensity')
+            ax.grid(visible=True, alpha=0.3)
+
+            ax = axs[2, 1]
+
+            energy_shifts = np.array(np.polyval(line, fit_data['g_center']) - fit_data['energy'])
+
+            ax.plot(fit_data['energy'], energy_shifts, color='black')
+            ax.set_title('Energy Shift (Calibrated-True)')
+            ax.set_xlabel('Incident Energy (eV)')
+            ax.set_ylabel('Energy Shift (eV)')
+            ax.grid(visible=True, alpha=0.3)
+            # ax.axhline(y=0, color='r', linestyle='--', alpha=0.7)
+            ax.axhline(y=np.mean(energy_shifts), color='r', linestyle='--', alpha=0.7)  # Add zero-line reference
+
+            plt.tight_layout()
+        # df = pd.DataFrame.from_dict(fit_data)
+
+
+        self.calibration_line = np.array([slope, intercept])
+        self.calibration_data = fit_data #add the data about the gaussians into this to maybe reuse for later
+
+        if 'calibration' not in self.sample.metadata:
+            self.sample.metadata['calibration'] = {}
+        roi_id = f"roi_{roi[0]}_{roi[1]}"
+
+        if str(self.number) not in self.sample.metadata['calibration']:
+            self.sample.metadata['calibration'][str(self.number)] = {}
+
+        self.sample.metadata['calibration'][str(self.number)][roi_id] = {
+            'roi': roi,
+            'line': self.calibration_line.tolist(),
+            'mean_fwhm': float(np.mean(fit_data['e_fwhm']))
+           }
+
+        logger.info(f"Calibration saved for scan {self.number}. "
+               f"Slope: {self.calibration_line[0]:.4f}, "
+               f"Intercept: {self.calibration_line[1]:.4f}")
+
+
+        return fit_data
+
+
+
         pass
 
-    def energy_calibration(self):
-        # calibrate energy axis by fitting the gaussians to the elastic peaks:
+def calibrate_energy_ax(data, line):
+    data = np.array(data)
+    k = line[0]
+    n = line[1]
+    return data*k + n
 
-
-        pass
 
 @dataclass
 class XESScan(BaseScan):
+    #do this last
     def process(self):
         # XES-specific processing
         self.load_data()
         # Process single image
+        pass
+    def combine_scans(self):
+        #combine multiple scans into one to enable energy calibration
         pass
 
 
@@ -252,7 +444,10 @@ sample = Sample(
     cycle_info="1st cycle")
 
 
-sample.add_scans([3,45,7])
+sample.add_scans([7])
+ROIS = sample.scans[7].auto_detect_ROI()
+sample.scans[7].energy_calibration(roi = ROIS[1],  plot=True)
+plt.show()
 
 
 
