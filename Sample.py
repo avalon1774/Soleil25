@@ -10,6 +10,7 @@ from lmfit.models import PolynomialModel, GaussianModel, LinearModel, Lorentzian
 import pandas as pd
 import logging
 
+from pycodestyle import continued_indentation
 
 from galaxies import read_nxs_file
 #from galaxies_ava import
@@ -144,7 +145,7 @@ class BaseScan:
                 ax.set_xlabel('Energy (px)')
                 ax.set_ylabel('Summed intensity')
                 ax.legend()
-            plt.show()
+            #plt.show()
 
         return ROIs
 
@@ -211,7 +212,7 @@ class RIXSMap(BaseScan):
             ax.legend()
 
             plt.tight_layout()
-            plt.show()
+            #plt.show()
 
 
 
@@ -260,7 +261,7 @@ class RIXSMap(BaseScan):
             for j, (e, data) in enumerate(zip(energy, pilatus_sum)):
 
                 x_max = int(np.polyval(approx_line_ene2pix, e))  # at which pixel are we looking for elastic peak a
-                if x_max > data.shape[0] - 15:  # stop when we run out of pixels (elastic runs out)
+                if x_max > data.shape[0] - 10:  # stop when we run out of pixels (elastic runs out)
                     continue
                 # presumed peakmaks 5 px left and right from the
                 # mask = [x_max-5:x_max+5]
@@ -290,8 +291,8 @@ class RIXSMap(BaseScan):
                     'g_center': result.params['g_center'].value,
                     'g_fwhm': 2.3548 * result.params['g_sigma'].value,
                     'g_intensities': result.params['g_height'].value,
-                    #        'bkg_c0': result.params['bkg_c0'].value,
-                    #        'bkg_c1': result.params['bkg_c1'].value,
+                    'bkg_c0': result.params['bkg_c0'].value,
+                    'bkg_c1': result.params['bkg_c1'].value,
                 })
 
                 if plot and j % 50 == 0:
@@ -383,8 +384,6 @@ class RIXSMap(BaseScan):
             self.calibration_line.append(np.array([slope, intercept]))
             #self.calibration_data = fit_data #add the data about the gaussians into this to maybe reuse for later
 
-            if 'calibration' not in self.sample.metadata:
-                self.sample.metadata['calibration'] = {}
 
 
 
@@ -402,6 +401,85 @@ class RIXSMap(BaseScan):
             #return fit_data
 
     def project_XAS(self, remove_elastic=False):
+        """ Projects the XAS from the RIXS map, removing elastic peaks if specified."""
+        pilatus_image = self.data['images']
+        filename = self.filename
+        fig, axs = plt.subplots(1, 2, figsize=(16, 7), squeeze=False)
+
+        for roi in self.ROIs:
+
+            roi_id = f"roi_{roi[0]}_{roi[1]}"
+            pixel_calibration = self.calibration_data[roi_id]['line']
+            energy = self.data['energies']
+
+            xas_spectrum = np.sum(pilatus_image[:, :, roi[0]:roi[1]], axis=(1, 2)) #projection onto incident energy axi
+
+
+            ax = axs[0, 0]
+            ax.set_title(f'Projected XAS for ROIs')
+            ax.plot(energy, xas_spectrum, label=f'Projected XAS for ROI {roi[0]}-{roi[1]}')
+            ax.set_xlabel('Incident Energy (eV)')
+            ax.set_ylabel('Intensity')
+            ax.legend()
+
+
+
+
+
+
+
+
+            if roi_id not in self.calibration_data:
+                raise ValueError(f"No calibration data found for ROI {roi_id}")
+
+            RIXS_map = np.sum(pilatus_image[:, :, roi[0]:roi[1]], axis=2)
+            energy = self.data['energies']
+
+            pixel_calibration = self.calibration_data[roi_id]['line']
+            pixel_axis = np.arange(0, 195)
+            E2 = np.polyval(pixel_calibration, np.arange(0, 195))
+
+
+            # replace elastic peak with a linear background determined before
+            N = 15
+            gaussians = self.calibration_data[roi_id]['gaussians']
+            for index, row in gaussians.iterrows():
+                c0 = row['bkg_c0']
+                c1 = row['bkg_c1']
+                peak = int(row['g_center'])
+
+                #replace the elastic peak with a linear background in 10 px rnge around the peak
+                if peak > 10 and peak < len(E2):
+                    if peak < len(E2) - N:
+                        RIXS_map[index][peak - 10:int(peak) + 10] = c0 + c1 * pixel_axis[peak - 10:peak + 10]
+                    else:
+                        RIXS_map[index][peak - 10:-1] = c0 + c1 * pixel_axis[peak - 10:-1]
+
+
+
+            xas_spectrum = np.sum(RIXS_map[:, :-N], axis=1)  # projection onto incident energy axis while omitting the last 5px
+
+            ax = axs[0, 1]
+            ax.set_title(f'Projected cleaned XAS for ROIs')
+            ax.plot(energy, xas_spectrum, label=f'Projected XAS for ROI {roi[0]}-{roi[1]}')
+            ax.set_xlabel('Incident Energy (eV)')
+            ax.set_ylabel('Intensity')
+            ax.legend()
+
+
+                #plot the rixs map without elastic peak
+                # ax = axs[0, 0]
+                # ax.set_title(f"Sum ROI {roi[0]}-{roi[1]} of {filename}")
+                # im = ax.pcolormesh(E2[:-N], energy, RIXS_map[:, :-N], shading='auto')
+                # ax.set_xlabel('Emitted Energy (eV)')
+                # ax.set_ylabel('Incident Energy (eV)')
+                # fig.colorbar(im, ax=ax)
+                # # plt.axis('square')
+                # ax.set_xlim(min(E2), max(E2))
+
+
+
+
 
 
 
@@ -411,6 +489,8 @@ def calibrate_energy_ax(data, line):
     k = line[0]
     n = line[1]
     return data*k + n
+
+
 
 
 @dataclass
@@ -494,11 +574,15 @@ sample = Sample(
     cycle_info="1st cycle")
 
 
+
+
 sample.add_scans([7])
-ROIS = sample.scans[7].auto_detect_ROI()
+sample.add_scans([8])
+#ROIS = sample.scans[7].auto_detect_ROI()
 #important: always do energy calibration first, then slice or plot XAS from map
-sample.scans[7].energy_calibration(plot=True)
-sample.scans[7].slice()
+#sample.scans[7].energy_calibration(plot=True)
+#sample.scans[7].slice()
+#sample.scans[7].project_XAS(remove_elastic=True)
 plt.show()
 
 
