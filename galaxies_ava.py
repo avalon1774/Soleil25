@@ -232,7 +232,7 @@ def remove_elastic(filename, pixel_calibration, roi):
         x_fit = x_full[mask]
         y_fit = y_full[mask]
         
-        background_order = 1
+        background_order = 2
         back_model = PolynomialModel(degree=background_order, prefix='bkg_')
         
         if E_center < max(x_full): 

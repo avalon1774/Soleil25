@@ -4,16 +4,28 @@ from importlib.metadata import metadata
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 import numpy as np
-import pandas as pd
+import os
+import h5py
+from dotenv import load_dotenv
+import importlib
 from matplotlib import pyplot as plt
+import matplotlib.gridspec as gridspec
 from lmfit.models import PolynomialModel, GaussianModel, LinearModel, LorentzianModel, VoigtModel
 import pandas as pd
-import logging
+import warnings
 
-from pycodestyle import continued_indentation
+from cache_utils import get_scan_dir
 
-from galaxies import read_nxs_file
-#from galaxies_ava import
+warnings.filterwarnings("ignore", message="Using UFloat objects with std_dev==0.*")   #idk where this error comes from but now I don't see it anymore so eh...
+
+import cache_utils
+importlib.reload(cache_utils)
+
+get_calibration_path = cache_utils.get_calibration_path
+save_pickle = cache_utils.save_pickle
+clean_sample_cache = cache_utils.clean_sample_cache
+load_pickle = cache_utils.load_pickle
+
 import logging
 
 """ Structure of data: 
@@ -21,7 +33,11 @@ import logging
     that are associated with its number. Each scan is a BaseScan which has some inharent functionality and . 
     according to the type, each one falls under one if subclasses
     XAS - line XAS scan
+    current funcctionalty: plot the XAS spectrum
+    missing: normalization and saving
     EXS - one-shot XES scan at fixed energy
+    current functionality: auto select rois or ad them manualy, energy calibration of emission axis, slicing the map into individual XES spectra, plot XAS projection with/without elastic peaks
+    missing: saving and a function to segment ROIS, segment also XAS projection, cache or something for energy calibration so there is no need to do it again
     RIXS map - a series of individual XES scans for each incident energy"""
 
 
@@ -29,6 +45,65 @@ logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(mes
 logger = logging.getLogger("Sample")
 
      # If you have logs from galaxies module
+
+def read_nxs_file(filename):
+    """
+    Reads a .nxs file and returns the requested data as a dictionary. Silently ignores missing data.
+    Parameters:
+    filename (str): The path to the .nxs file relative to the path given in the DATA_PATH variable.
+
+    Returns:
+    dict: A dictionary containing the rquested data from the .nxs file. At the moment, the following keys may be available:
+        - 'energies': The energies of the incident photons.
+        - 'images': The images taken during the scan.
+        - 'position': The position of the sample during the scan.
+        - 'DIODE': The DIODE signal during the scan.
+        - 'I01': The I01 signal during the scan.
+        - 'SDD': The SDD signal during the scan.
+        - 'Amptek': The Amptek signal during the scan.
+        - 'exposure_time': The exposure time for each image.
+        - 'start_time': The start time of the scan in wall clock.
+        - 'scan_command': The command used to initiate the scan.
+    """
+    load_dotenv('/home/ava/Documents/2025/GALAXIES25/Analysis/soleil25a/.env')  # Adjust this path to where your .env file is
+    data_path = os.environ.get('DATA_PATH')
+
+    fullpath = os.path.join(data_path, filename)
+    logger.info("reading file %s", filename)
+
+    to_read_arrays = {
+        'energies': '/root_spyc_config1d_RIXS_0001/GALAXIES/pilatus/Energy_Real',
+        'images': '/root_spyc_config1d_RIXS_0001/scan_data/image_image',
+        'position': '/root_spyc_config1d_RIXS_0001/GALAXIES/scan_record/MotorTrj1',
+        'DIODE': '/root_spyc_config1d_RIXS_0001/GALAXIES/scan_record/RIXS_DIODE',
+        'I01': '/root_spyc_config1d_RIXS_0001/GALAXIES/scan_record/QBPM_C08_sum',
+        'SDD': '/root_spyc_config1d_RIXS_0001/scan_data/xspchannel00',
+        'Amptek': '/root_spyc_config1d_RIXS_0001/scan_data/xspchannel01',
+        'exposure_time': '/root_spyc_config1d_RIXS_0001/GALAXIES/i07-c-cx2-dt-pilatus.2/exposure_time',
+        'sample_zs': '/root_spyc_config1d_RIXS_0001/GALAXIES/i07-c-cx2-ex-sample_zs/sample_zs',
+    }
+
+    to_read_scalars = {
+        'start_time': '/root_spyc_config1d_RIXS_0001/start_time',
+        'end_time': '/root_spyc_config1d_RIXS_0001/end_time',
+        'scan_command': '/root_spyc_config1d_RIXS_0001/GALAXIES/scan_record/scan',
+    }
+
+    with h5py.File(fullpath, 'r') as f:
+        out = {}
+        for key, path in to_read_arrays.items():
+            if path in f:
+                out[key] = f[path][:]
+        for key, path in to_read_scalars.items():
+            if path in f:
+                out[key] = f[path][()]
+                if isinstance(out[key], bytes):
+                    out[key] = out[key].decode('utf-8', errors='ignore')
+
+    return out
+
+
+
 
 
 @dataclass
@@ -115,7 +190,7 @@ class BaseScan:
             falling_edges = np.append(falling_edges, len(above_threshold))
 
         ROIs= []
-        colors = ['red', 'green', 'blue', ]
+        colors = ['red', 'green', 'blue', 'orange', 'purple']
         E = np.arange(0, 195)
 
         for start, end in zip(rising_edges, falling_edges):
@@ -142,6 +217,7 @@ class BaseScan:
                 ax.plot(E, np.sum(pilatus_image[:, :, left:right], axis=(0, 2)), color=color,
                         label='ROI ' + str(left) + ' - ' + str(right) + '')
                 ax.set_title(f'Summed XES spectra')
+                ax.grid(visible = True, alpha = 0.3)
                 ax.set_xlabel('Energy (px)')
                 ax.set_ylabel('Summed intensity')
                 ax.legend()
@@ -152,10 +228,54 @@ class BaseScan:
 @dataclass
 class XASScan(BaseScan):
     def plot(self):
-        # plot the scan and return it, to be used as comparison
-        self.load_data()
-        # Process Amptek data
-        pass
+        """Plot the XAS spectrum.
+        1. summed amptek images
+        2. heatmap of the pilatus detector vs. incident energy
+        3. XAS spectrum within ROI which is shown on the image 1
+        return the XAS spectrum"""
+
+        fig = plt.figure(figsize=(16, 7))
+        gs = gridspec.GridSpec(2, 2, width_ratios=[1, 1])  # 2 rows, 2 columns
+
+
+        position = self.data['position']
+        Amptek = self.data['Amptek']
+        roi = [220,240]
+        roi_start = roi[0]
+        roi_end = roi[1]
+
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax1.plot(np.arange(100, 4000), np.sum(Amptek[:, 100:4000], axis=0), label='Amptek')
+        ax1.set_xlim(100, 1000)
+        ax1.grid(visible=True, alpha=0.3)
+        ax1.set_xlabel('Pixel')
+        ax1.set_ylabel('Summed Counts')
+        ax1.set_title(f"Summed amptek counts for {self.filename}")
+        ax1.axvline(roi_start, color='red')
+        ax1.axvline(roi_end, color='red')
+
+        # Left bottom plot
+        ax2 = fig.add_subplot(gs[1, 0])
+        ax2.pcolormesh(np.arange(4096), position, np.log(Amptek + 1))
+        ax2.set_xlim(100, 1000)
+        ax2.set_ylabel('Incident energy [eV]')
+        ax2.set_xlabel('Pixel')
+        ax2.set_title('Logscale of Amptek detector')
+        ax2.axvline(roi_start, color='red')
+        ax2.axvline(roi_end, color='red')
+
+        # Right tall plot spanning both rows
+        ax3 = fig.add_subplot(gs[:, 1])
+        Amptek_roi = np.sum(Amptek[:, roi_start:roi_end], axis=1)
+        ax3.plot(position, Amptek_roi, '-', color='black', label = 'Amptek')
+        ax3.set_title("Amptek ROI projection")
+        ax3.set_xlabel("Incident energy [eV]")
+        ax3.set_ylabel("Summed ROI Counts")
+        ax3.grid(visible=True, alpha=0.3)
+
+        plt.tight_layout()
+
+
 
     def normalize_spectrum(self):
         # XAS-specific method
@@ -208,6 +328,7 @@ class RIXSMap(BaseScan):
                 ax.plot(E2, emission_line, label=f'{energy[idx]:.2f} eV')
             ax.set_xlabel('Emitted Energy (eV)')
             ax.set_ylabel('Intensity')
+            ax.grid(visible=True, alpha=0.3)
             ax.set_xlim(min(E2), max(E2))
             ax.legend()
 
@@ -216,7 +337,7 @@ class RIXSMap(BaseScan):
 
 
 
-    def energy_calibration(self, vmax=None, plot=True):
+    def energy_calibration(self, vmax=None, plot=True, save = True):
         """calibrate energy axis by fitting the gaussians to the elastic peaks, that are isolated
         somewhere below the given linear line that should be around elastic peak
         TODO: save elastic peaks or, maybe fit parameters, for later removal
@@ -232,156 +353,167 @@ class RIXSMap(BaseScan):
         for roi in self.ROIs:
             roi_id = f"roi_{roi[0]}_{roi[1]}"
 
+            cache_path = get_calibration_path(self, roi)
+
             if roi_id in self.calibration_data:
                 logger.info(f"Calibration already exists for ROI: {roi_id}.")
-
                 continue
 
+            if cache_path.exists():
+                logger.info(f"Loading calibration from cache for ROI: {roi_id}.")
+                self.calibration_data[roi_id] = load_pickle(cache_path)
+                continue
 
-            pilatus_sum = np.sum(pilatus_image[:, :, roi[0]:roi[1]], axis=2)
+            else:
+                logger.info(f"Calibrating energy for ROI: {roi_id}.")
 
-            line_ends = ((energy[0], energy[np.argmax(pilatus_sum[:,-1])]), (np.argmax(pilatus_sum[0]), 195))
+
+                pilatus_sum = np.sum(pilatus_image[:, :, roi[0]:roi[1]], axis=2)
+
+                line_ends = ((energy[0], energy[np.argmax(pilatus_sum[:,-1])]), (np.argmax(pilatus_sum[0]), 195))
 
 
-            approx_line_ene2pix = np.polyfit(line_ends[0], line_ends[1], 1)
-            pixel_axis = np.arange(0, 195)
+                approx_line_ene2pix = np.polyfit(line_ends[0], line_ends[1], 1)
+                pixel_axis = np.arange(0, 195)
 
-            if plot:
-                fig, axs = plt.subplots(3, 2, figsize=(15, 15))
-                ax = axs[0, 0]
-                ax.set_title(f"Sum ROI {roi[0]}-{roi[1]} of {filename}")
-                g1 = ax.pcolormesh(np.arange(0, 195), energy, pilatus_sum, vmax=vmax)
-                plt.colorbar(g1, ax=ax)
-                ax.set_xlabel("pixel")
-                ax.set_ylabel("Incident Energy [eV]")
-                ax.set_xlim(0, 195)
-                ax.plot(np.polyval(approx_line_ene2pix, energy), energy, color='red')
+                if plot:
+                    fig, axs = plt.subplots(3, 2, figsize=(15, 15))
+                    ax = axs[0, 0]
+                    ax.set_title(f"Sum ROI {roi[0]}-{roi[1]} of {filename}")
+                    g1 = ax.pcolormesh(np.arange(0, 195), energy, pilatus_sum, vmax=vmax)
+                    plt.colorbar(g1, ax=ax)
+                    ax.set_xlabel("pixel")
+                    ax.set_ylabel("Incident Energy [eV]")
+                    ax.set_xlim(0, 195)
+                    ax.plot(np.polyval(approx_line_ene2pix, energy), energy, color='red')
 
-            fit_results = []
-            for j, (e, data) in enumerate(zip(energy, pilatus_sum)):
+                fit_results = []
+                for j, (e, data) in enumerate(zip(energy, pilatus_sum)):
 
-                x_max = int(np.polyval(approx_line_ene2pix, e))  # at which pixel are we looking for elastic peak a
-                if x_max > data.shape[0] - 10:  # stop when we run out of pixels (elastic runs out)
-                    continue
-                # presumed peakmaks 5 px left and right from the
-                # mask = [x_max-5:x_max+5]
+                    x_max = int(np.polyval(approx_line_ene2pix, e))  # at which pixel are we looking for elastic peak a
+                    if x_max > data.shape[0] - 10:  # stop when we run out of pixels (elastic runs out)
+                        continue
+                    # presumed peakmaks 5 px left and right from the
+                    # mask = [x_max-5:x_max+5]
 
-                rng = 20
-                x = np.linspace(0, len(pixel_axis), len(pixel_axis))[x_max - rng + 5:x_max + rng]
-                y = data[x_max - rng + 5:x_max + rng]
+                    rng = 20
+                    x = np.linspace(0, len(pixel_axis), len(pixel_axis))[x_max - rng + 5:x_max + rng]
+                    y = data[x_max - rng + 5:x_max + rng]
 
-                background_order = 1
-                back_model = PolynomialModel(degree=background_order, prefix='bkg_')
-                gauss_model = GaussianModel(prefix='g_')
-                model = back_model + gauss_model
-                params = model.make_params()
+                    background_order = 1   #background aroun elstic peak is estimated with a linear function... not true when close to the XES line
+                    back_model = PolynomialModel(degree=background_order, prefix='bkg_')
+                    gauss_model = GaussianModel(prefix='g_')
+                    model = back_model + gauss_model
+                    params = model.make_params()
 
-                for i in range(background_order + 1):
-                    params[f'bkg_c{i}'].set(value=1)
+                    for i in range(background_order + 1):
+                        params[f'bkg_c{i}'].set(value=1)
 
-                params['g_amplitude'].set(value=np.max(y), min=0)
-                params['g_center'].set(value=x[np.argmax(y)])
-                params['g_sigma'].set(value=0.5)
+                    params['g_amplitude'].set(value=np.max(y), min=0)
+                    params['g_center'].set(value=x[np.argmax(y)])
+                    params['g_sigma'].set(value=0.5)
 
-                result = model.fit(y, params, x=x)
+                    result = model.fit(y, params, x=x)
 
-                fit_results.append({
-                    'energy': e,
-                    'g_amplitude': result.params['g_amplitude'].value,
-                    'g_center': result.params['g_center'].value,
-                    'g_fwhm': 2.3548 * result.params['g_sigma'].value,
-                    'g_intensities': result.params['g_height'].value,
-                    'bkg_c0': result.params['bkg_c0'].value,
-                    'bkg_c1': result.params['bkg_c1'].value,
-                })
+                    fit_results.append({
+                        'energy': e,
+                        'g_amplitude': result.params['g_amplitude'].value,
+                        'g_center': result.params['g_center'].value,
+                        'g_fwhm': 2.3548 * result.params['g_sigma'].value,
+                        'g_intensities': result.params['g_height'].value,
+                        'bkg_c0': result.params['bkg_c0'].value,
+                        'bkg_c1': result.params['bkg_c1'].value,
+                    })
 
-                if plot and j % 50 == 0:
-                    ax = axs[0, 1]
-                    ax.plot(x, y, color='black')
-                    # ax.plot(x_fit, result.best_fit, color = 'red', label = 'fit')
-                    # ax.plot(x, result.eval_components(x=x)['bkg_'], '--', label='Background')
+                    if plot and j % 50 == 0:
+                        ax = axs[0, 1]
+                        ax.plot(x, y, color='black')
+                        # ax.plot(x_fit, result.best_fit, color = 'red', label = 'fit')
+                        # ax.plot(x, result.eval_components(x=x)['bkg_'], '--', label='Background')
 
-                    ax.plot(x, result.eval_components(x=x)['g_'], '--', label=f'Gaussian at {e:.2f} eV')
-                    ax.axvline(x_max, color='gray', alpha=0.5, linestyle='--'
-                               )
-                    ax.set_title(f'Fit to elastic peak')
-                    ax.set_xlabel('energy (px)')
-                    ax.set_ylabel(f'intesity')
+                        ax.plot(x, result.eval_components(x=x)['g_'], '--', label=f'Gaussian at {e:.2f} eV')
+                        ax.axvline(x_max, color='gray', alpha=0.5, linestyle='--'
+                                   )
+                        ax.set_title(f'Fit to elastic peak')
+                        ax.set_xlabel('energy (px)')
+                        ax.set_ylabel(f'intesity')
+                        ax.grid(visible=True, alpha=0.3)
+                        ax.legend()
+
+                fit_data = pd.DataFrame(fit_results)
+                # print(fit_data)
+
+                lin_model = LinearModel(prefix='lin_')
+                params = lin_model.make_params()
+                result = lin_model.fit(fit_data['energy'], params, x=fit_data['g_center'])
+
+                slope = result.params['lin_slope'].value
+                slope_err = result.params['lin_slope'].stderr or 1e-10
+                intercept = result.params['lin_intercept'].value
+                intercept_err = result.params['lin_intercept'].stderr or 1e-10
+
+                fit_text = (f"Slope = {slope:.4f} ± {slope_err:.4f}\n"
+                            f"Intercept = {intercept:.4f} ± {intercept_err:.4f}")
+
+                line = np.array([result.params['lin_slope'].value, result.params['lin_intercept'].value])
+                fwhm_e = fit_data['g_fwhm'] * result.params['lin_slope'].value
+                mean = np.mean(fwhm_e)
+                fit_data['e_fwhm'] = fwhm_e
+
+                if plot:
+                    ax = axs[1, 0]
+                    ax.set_title('Enegy calibration' + filename)
+                    ax.scatter(fit_data['g_center'], fit_data['energy'], color='black', s=10)
+                    ax.plot(fit_data['g_center'], result.best_fit, color='red', label='fit')
+                    ax.set_title(f'Elastic calibration {filename}')
+                    ax.set_xlabel('Y pixels')
                     ax.grid(visible=True, alpha=0.3)
-                    ax.legend()
+                    ax.set_ylabel(f'Energy (eV)')
+                    ax.text(0.05, 0.95, fit_text, transform=ax.transAxes,
+                            fontsize=12, verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-            fit_data = pd.DataFrame(fit_results)
-            # print(fit_data)
+                    ax = axs[1, 1]
+                    ax.set_title('Gauss FWHM' + filename)
+                    ax.plot(calibrate_energy_ax(fit_data['g_center'], line),
+                            fit_data['g_fwhm'] * result.params['lin_slope'].value, color='black', label='fit')
 
-            lin_model = LinearModel(prefix='lin_')
-            params = lin_model.make_params()
-            result = lin_model.fit(fit_data['energy'], params, x=fit_data['g_center'])
+                    ax.set_title(f'Elastic peak width')
+                    ax.grid(visible=True, alpha=0.3)
+                    ax.axhline(y=mean, color='r', linestyle='--', alpha=0.7)
+                    ax.text(0.05, 0.95, f"Mean FWHM = {mean:.4f}", transform=ax.transAxes,
+                            fontsize=12, verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-            slope = result.params['lin_slope'].value
-            slope_err = result.params['lin_slope'].stderr
-            intercept = result.params['lin_intercept'].value
-            intercept_err = result.params['lin_intercept'].stderr
+                    ax.set_xlabel('Incident Energy (eV)')
+                    ax.set_ylabel(f'FWHM (eV)')
 
-            fit_text = (f"Slope = {slope:.4f} ± {slope_err:.4f}\n"
-                        f"Intercept = {intercept:.4f} ± {intercept_err:.4f}")
+                    ax = axs[2, 0]
+                    ax.plot(fit_data['energy'], fit_data['g_intensities'], color='black')
+                    ax.set_title('Elastic peak Intensity')
+                    ax.set_xlabel('Incident Energy (eV)')
+                    ax.set_ylabel('Intensity')
+                    ax.grid(visible=True, alpha=0.3)
 
-            line = np.array([result.params['lin_slope'].value, result.params['lin_intercept'].value])
-            fwhm_e = fit_data['g_fwhm'] * result.params['lin_slope'].value
-            mean = np.mean(fwhm_e)
-            fit_data['e_fwhm'] = fwhm_e
+                    ax = axs[2, 1]
 
-            if plot:
-                ax = axs[1, 0]
-                ax.set_title('Enegy calibration' + filename)
-                ax.scatter(fit_data['g_center'], fit_data['energy'], color='black', s=10)
-                ax.plot(fit_data['g_center'], result.best_fit, color='red', label='fit')
-                ax.set_title(f'Elastic calibration {filename}')
-                ax.set_xlabel('Y pixels')
-                ax.grid(visible=True, alpha=0.3)
-                ax.set_ylabel(f'Energy (eV)')
-                ax.text(0.05, 0.95, fit_text, transform=ax.transAxes,
-                        fontsize=12, verticalalignment='top',
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    energy_shifts = np.array(np.polyval(line, fit_data['g_center']) - fit_data['energy'])
 
-                ax = axs[1, 1]
-                ax.set_title('Gauss FWHM' + filename)
-                ax.plot(calibrate_energy_ax(fit_data['g_center'], line),
-                        fit_data['g_fwhm'] * result.params['lin_slope'].value, color='black', label='fit')
+                    ax.plot(fit_data['energy'], energy_shifts, color='black')
+                    ax.set_title('Energy Shift (Calibrated-True)')
+                    ax.set_xlabel('Incident Energy (eV)')
+                    ax.set_ylabel('Energy Shift (eV)')
+                    ax.grid(visible=True, alpha=0.3)
+                    # ax.axhline(y=0, color='r', linestyle='--', alpha=0.7)
+                    ax.axhline(y=np.mean(energy_shifts), color='r', linestyle='--', alpha=0.7)  # Add zero-line reference
 
-                ax.set_title(f'Elastic peak width')
-                ax.grid(visible=True, alpha=0.3)
-                ax.axhline(y=mean, color='r', linestyle='--', alpha=0.7)
-                ax.text(0.05, 0.95, f"Mean FWHM = {mean:.4f}", transform=ax.transAxes,
-                        fontsize=12, verticalalignment='top',
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
-                ax.set_xlabel('Incident Energy (eV)')
-                ax.set_ylabel(f'FWHM (eV)')
-
-                ax = axs[2, 0]
-                ax.plot(fit_data['energy'], fit_data['g_intensities'], color='black')
-                ax.set_title('Elastic peak Intensity')
-                ax.set_xlabel('Incident Energy (eV)')
-                ax.set_ylabel('Intensity')
-                ax.grid(visible=True, alpha=0.3)
-
-                ax = axs[2, 1]
-
-                energy_shifts = np.array(np.polyval(line, fit_data['g_center']) - fit_data['energy'])
-
-                ax.plot(fit_data['energy'], energy_shifts, color='black')
-                ax.set_title('Energy Shift (Calibrated-True)')
-                ax.set_xlabel('Incident Energy (eV)')
-                ax.set_ylabel('Energy Shift (eV)')
-                ax.grid(visible=True, alpha=0.3)
-                # ax.axhline(y=0, color='r', linestyle='--', alpha=0.7)
-                ax.axhline(y=np.mean(energy_shifts), color='r', linestyle='--', alpha=0.7)  # Add zero-line reference
-
-                plt.tight_layout()
+                    plt.tight_layout()
             # df = pd.DataFrame.from_dict(fit_data)
 
 
-            self.calibration_line.append(np.array([slope, intercept]))
+             #self.calibration_line.append(np.array([slope, intercept]))
+
+
             #self.calibration_data = fit_data #add the data about the gaussians into this to maybe reuse for later
 
 
@@ -393,9 +525,13 @@ class RIXSMap(BaseScan):
                 'gaussians': fit_data
                }
 
-            logger.info(f"Calibration saved for scan {self.number}. "
+            logger.info(f"Calibration for scan {self.number}. "
                    f"Slope: {slope:.4f}, "
                    f"Intercept: {intercept:.4f}")
+
+            if save:
+                path = get_calibration_path(self, roi)
+                save_pickle(self.calibration_data[roi_id], path)
 
 
             #return fit_data
@@ -420,13 +556,8 @@ class RIXSMap(BaseScan):
             ax.plot(energy, xas_spectrum, label=f'Projected XAS for ROI {roi[0]}-{roi[1]}')
             ax.set_xlabel('Incident Energy (eV)')
             ax.set_ylabel('Intensity')
+            ax.grid(visible=True, alpha=0.3)
             ax.legend()
-
-
-
-
-
-
 
 
             if roi_id not in self.calibration_data:
@@ -460,6 +591,7 @@ class RIXSMap(BaseScan):
             xas_spectrum = np.sum(RIXS_map[:, :-N], axis=1)  # projection onto incident energy axis while omitting the last 5px
 
             ax = axs[0, 1]
+            ax.grid(visible=True, alpha=0.3)
             ax.set_title(f'Projected cleaned XAS for ROIs')
             ax.plot(energy, xas_spectrum, label=f'Projected XAS for ROI {roi[0]}-{roi[1]}')
             ax.set_xlabel('Incident Energy (eV)')
@@ -478,12 +610,6 @@ class RIXSMap(BaseScan):
                 # ax.set_xlim(min(E2), max(E2))
 
 
-
-
-
-
-
-
 def calibrate_energy_ax(data, line):
     data = np.array(data)
     k = line[0]
@@ -495,15 +621,77 @@ def calibrate_energy_ax(data, line):
 
 @dataclass
 class XESScan(BaseScan):
-    #do this last
-    def process(self):
-        # XES-specific processing
-        self.load_data()
-        # Process single image
-        pass
-    def combine_scans(self):
-        #combine multiple scans into one to enable energy calibration
-        pass
+    calibration: Dict[str, Any] = field(default_factory=dict, init=False)  # dictionary of roi and calibration data, e.g. {'roi_1_2': {'line': [slope, intercept], 'mean_fwhm': 0.5, 'gaussians': pd.DataFrame}} = None
+    #need to take energy calibration from somewwhere.
+
+      # sum over all energies, if tere is only one then fine
+
+
+    def energy_calibration_from_scan(self, RIXSscan: RIXSMap):
+        #take energy calibration from the RIXS scan, also adopt same ROIs
+
+        #self.calibration = RIXSscan.calibration_data
+        #self.ROIs = RIXSscan.ROIs
+
+        cache_dir = get_scan_dir(RIXSscan)
+        for file in cache_dir.glob('calibration_*.pkl'):
+                result = load_pickle(file)
+                roi_left = int(file.stem.split('_')[1])
+                roi_right = int(file.stem.split('_')[2])
+
+                roi_id = f"roi_{roi_left}_{roi_right}"
+                self.calibration[roi_id] = result
+                if self.ROIs == None:
+                    self.ROIs = [(roi_left, roi_right)]
+                else:
+                    self.ROIs.append((roi_left, roi_right))
+
+
+
+
+
+    def plot(self):
+        summed_pilatus = np.sum(self.data['images'], axis=0)
+        if not self.calibration:
+            logger.warning('no calibration assigned to scan %s', self.filename)
+
+        fig, axs = plt.subplots(1, 2, figsize=(16, 7), squeeze=False)
+
+        ax = axs[0, 0]
+        ax.set_title(f"Pilatus image of {self.filename.split('.')[0]} at energy: {self.energy[0]:.2f}")
+        im = ax.pcolormesh(summed_pilatus, shading='auto', vmax=3000, vmin=0)
+        ax.set_ylim(195, 0)
+        ax.set_xlabel('pixel')
+        ax.set_ylabel('pixel')
+        fig.colorbar(im, ax=ax)
+        colors = ['red', 'green', 'blue', 'orange', 'purple']
+
+        for roi, color in zip(self.ROIs, colors):
+            roi_id = f"roi_{roi[0]}_{roi[1]}"
+            if roi_id not in self.calibration:
+                logger.warning(f"No calibration data found for ROI {roi_id}. Skipping plot.")
+                continue
+
+            pixel_calibration = self.calibration[roi_id]['line']
+            E2 = np.polyval(pixel_calibration, np.arange(0, 195))
+
+            pilatus_image = self.data['images']
+            energy = self.energy
+
+            xes_spectrum = np.sum(pilatus_image[:, :, roi[0]:roi[1]], axis=(1, 2))
+            ax = axs[0, 0]
+
+            ax.axvline(roi[0], color=color, linestyle='--')
+            ax.axvline(roi[1], color=color, linestyle='--')
+            ax = axs[0, 1]
+            ax.plot(E2, np.sum(pilatus_image[:, :, roi[0]:roi[1]], axis=(0, 2)), color=color,
+                    label='ROI ' + str(roi[0]) + ' - ' + str(roi[1]) + '')
+            ax.set_title(f'XES spectra')
+            ax.grid(visible=True, alpha=0.3)
+            ax.set_xlabel('Energy (eV)')
+            ax.set_ylabel('Intensity')
+            ax.legend()
+
 
 
 @dataclass
@@ -578,9 +766,13 @@ sample = Sample(
 
 sample.add_scans([7])
 sample.add_scans([8])
-#ROIS = sample.scans[7].auto_detect_ROI()
+sample.scans[8].plot()
+ROIS = sample.scans[7].auto_detect_ROI()
 #important: always do energy calibration first, then slice or plot XAS from map
-#sample.scans[7].energy_calibration(plot=True)
+sample.scans[7].energy_calibration(plot=True)
+sample.add_scans([9])
+sample.scans[9].energy_calibration_from_scan(sample.scans[7])
+sample.scans[9].plot()
 #sample.scans[7].slice()
 #sample.scans[7].project_XAS(remove_elastic=True)
 plt.show()
