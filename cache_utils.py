@@ -62,6 +62,13 @@ def get_calibration_path(scan: 'BaseScan', roi: Tuple[int, int], kind: str = "xa
     return get_scan_dir(scan) / f"calibration_{roi_str}{suffix}.pkl"
 
 
+def get_plot_path(scan: 'BaseScan', descriptor: str = 'plot') -> Path:
+    scan_dir = get_scan_dir(scan) / "plot"
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    filename = f'{descriptor}.png'
+    return scan_dir/filename
+
+
 # def get_roi_path(scan: 'BaseScan') -> Path:
 #     #rois all all saved in a .json file in the scan directory
 #     return get_scan_dir(scan) / "roi.json"
@@ -71,7 +78,7 @@ def get_spectrum_path(scan: 'BaseScan', roi: Tuple[int,int], kind:str = "xas", p
     suffix = ""
     if params:
         suffix = f"_{get_hash_from_params(params)}"
-    return get_scan_dir(scan) / f"spectrum_{roi_str}_{kind}{suffix}.npy"
+    return get_scan_dir(scan) / f"spectrum_{roi_str}_{kind}{suffix}.csv"
 
 
 def clean_scan_cache(sample: 'BaseScan') -> None:

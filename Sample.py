@@ -25,20 +25,10 @@ get_calibration_path = cache_utils.get_calibration_path
 save_pickle = cache_utils.save_pickle
 clean_sample_cache = cache_utils.clean_sample_cache
 load_pickle = cache_utils.load_pickle
+get_spectrum_path = cache_utils.get_spectrum_path
+get_plot_path = cache_utils.get_plot_path
 
 import logging
-
-""" Structure of data: 
-    Sample class, cotains all info about the sample (name, cycle...), and it holds all the scans
-    that are associated with its number. Each scan is a BaseScan which has some inharent functionality and . 
-    according to the type, each one falls under one if subclasses
-    XAS - line XAS scan
-    current funcctionalty: plot the XAS spectrum
-    missing: normalization and saving
-    EXS - one-shot XES scan at fixed energy
-    current functionality: auto select rois or ad them manualy, energy calibration of emission axis, slicing the map into individual XES spectra, plot XAS projection with/without elastic peaks
-    missing: saving and a function to segment ROIS, segment also XAS projection, cache or something for energy calibration so there is no need to do it again
-    RIXS map - a series of individual XES scans for each incident energy"""
 
 
 logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(message)s')
@@ -103,6 +93,43 @@ def read_nxs_file(filename):
     return out
 
 
+def save_xas_from_RIXS(scan: 'RIXSMap', roi, energy, rw_xas, cleaned_xas):
+    df = pd.DataFrame({
+        'incident_energy': energy,
+        'raw_xas': rw_xas,
+        'cleaned_xas': cleaned_xas})
+    path = get_spectrum_path(scan, roi, kind='pilatus_xas')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    logger.info(f"Saved XAS from sample {scan.filename} into {path}")
+
+def save_amptek(scan: 'XASScan',roi, energy, intensity):
+    df = pd.DataFrame({
+        'emited_energy': energy,
+        'intensity': intensity})
+
+
+    path = get_spectrum_path(scan, roi, kind='amptek_xas')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    logger.info(f"Saved XAS from sample {scan.filename}  into {path}")
+
+def save_xes_from_RIXS(scan: 'RIXSMap', roi, emitted_energy, slices: np.ndarray, energies: list):
+    'save all requested slices (at energies) into one file'
+    df = pd.DataFrame(slices.T, columns = [f"{e:.2f} eV" for e in energies])
+    df.insert(0, 'emision energy', emitted_energy)
+    # Add emitted energy as the first column
+    path = get_spectrum_path(scan, roi, kind='pilatus_xes')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    logger.info(f"Saved XES slices from sample {scan.filename} into {path}")
+
+def save_plot(scan: 'BaseScan', fig: plt.Figure, descriptor: str = "plot"):
+    """save figure as png in the scan directory"""
+    path = get_plot_path(scan,descriptor)
+    fig.savefig(path,dpi=300)
+    #plt.close(fig)
+    logger.info(f"Saved plot from sample {scan.filename} into {path}")
 
 
 
@@ -125,10 +152,6 @@ class BaseScan:
             self.define_energy()
         else:
             self.load_data()
-
-
-
-
 
     def print_info(self):
         print(f"{self.type} no. {self.number}: {self.filename}")
@@ -169,6 +192,8 @@ class BaseScan:
             self.scan_type = 'Unknown'
 
         return self.scan_type
+
+
     def auto_detect_ROI(self, threshold: float = 0.4, Plot = True, min_region_width: int=5):
         self.ROIs = []
         pilatus_image = self.data['images']
@@ -222,12 +247,13 @@ class BaseScan:
                 ax.set_ylabel('Summed intensity')
                 ax.legend()
             #plt.show()
+        save_plot(self, fig, descriptor=f"{self.filename}_calibration_summary")
 
         return ROIs
 
 @dataclass
 class XASScan(BaseScan):
-    def plot(self):
+    def plot(self, save=False):
         """Plot the XAS spectrum.
         1. summed amptek images
         2. heatmap of the pilatus detector vs. incident energy
@@ -273,6 +299,11 @@ class XASScan(BaseScan):
         ax3.set_ylabel("Summed ROI Counts")
         ax3.grid(visible=True, alpha=0.3)
 
+        save_plot(self, fig, descriptor=f"{self.filename}_amptek_XAS")
+        if save:
+            save_amptek(self, roi, self.data['position'], Amptek_roi)
+
+
         plt.tight_layout()
 
 
@@ -288,7 +319,7 @@ class RIXSMap(BaseScan):
     calibration_line: Optional[np.ndarray] = None  # Store slope and intercept
 
 
-    def slice(self, absorption_energy: Optional[np.ndarray] = None):
+    def slice(self, absorption_energy: Optional[np.ndarray] = None, save = False):
         """returns the slices of the map at energies specified in absorption_energy list"""
         if absorption_energy is None:
             absorption_energy = [2460,2469.5,2471,2472] #default values
@@ -298,7 +329,7 @@ class RIXSMap(BaseScan):
         filename = self.filename
 
         for roi in self.ROIs:
-
+            slices = []
             roi_id = f"roi_{roi[0]}_{roi[1]}"
             pixel_calibration = self.calibration_data[roi_id]['line']
             E2 = np.polyval(pixel_calibration, np.arange(0, 195))
@@ -326,6 +357,8 @@ class RIXSMap(BaseScan):
                 idx = (np.abs(energy - target_E)).argmin()
                 emission_line = pilatus_sum[idx]
                 ax.plot(E2, emission_line, label=f'{energy[idx]:.2f} eV')
+                slices.append(emission_line)
+
             ax.set_xlabel('Emitted Energy (eV)')
             ax.set_ylabel('Intensity')
             ax.grid(visible=True, alpha=0.3)
@@ -334,6 +367,9 @@ class RIXSMap(BaseScan):
 
             plt.tight_layout()
             #plt.show()
+            save_plot(self, fig, descriptor=f"{roi_id}_XES")
+            if save:
+                save_xes_from_RIXS(self, roi, E2, np.array(slices), absorption_energy)
 
 
 
@@ -508,6 +544,8 @@ class RIXSMap(BaseScan):
                     ax.axhline(y=np.mean(energy_shifts), color='r', linestyle='--', alpha=0.7)  # Add zero-line reference
 
                     plt.tight_layout()
+
+                    save_plot(self, fig, descriptor=f"{roi_id}_calibration_summary")
             # df = pd.DataFrame.from_dict(fit_data)
 
 
@@ -529,14 +567,62 @@ class RIXSMap(BaseScan):
                    f"Slope: {slope:.4f}, "
                    f"Intercept: {intercept:.4f}")
 
+
+
             if save:
                 path = get_calibration_path(self, roi)
                 save_pickle(self.calibration_data[roi_id], path)
 
 
-            #return fit_data
+    def optimize_ROI(self, roi_range: tuple=(280,370), width: int=5, step: int = 5, plot = True):
+        "check the region between roi_range in steps to find the optimum FWHM"
 
-    def project_XAS(self, remove_elastic=False):
+        fwhms = []
+        centers = []
+        results = []
+
+        left_start, left_end = roi_range
+        for offset in range (left_start, left_end - width, step):
+            test_roi = (offset, offset + width)
+            roi_id = f"roi_{test_roi[0]}_{test_roi[1]}"
+            logger.info(f"Testing ROI {roi_id}")
+
+            original_rois = self.ROIs
+            self.ROIs = [test_roi]
+            self.calibration_data.pop(roi_id, None)  # ensure clean
+            self.energy_calibration(plot=False, save=False)
+
+            result = self.calibration_data[roi_id]
+            mean_fwhm = result["mean_fwhm"]
+            fwhms.append(mean_fwhm)
+            centers.append(offset + width / 2)
+            results.append({
+                "roi": test_roi,
+                "center": offset + width / 2,
+                "mean_fwhm": mean_fwhm
+            })
+            self.ROIs = original_rois
+            # Restore original ROIs
+
+
+        df = pd.DataFrame(results)
+
+        if plot:
+            fig, ax = plt.subplots(figsize=(7, 4))
+            ax.plot(df["center"], df["mean_fwhm"], marker="o", color = 'black')
+            ax.set_xlabel("ROI center (pixels)")
+            ax.set_ylabel("Mean FWHM (eV)")
+            ax.set_title(f"Elastic FWHM vs ROI center with width {width} for Scan {self.number}")
+            ax.grid(True, alpha=0.3)
+
+            save_plot(self, fig, descriptor="optimize_ROI")
+
+        return df
+
+
+
+
+    def project_XAS(self, remove_elastic=False, save = False):
         """ Projects the XAS from the RIXS map, removing elastic peaks if specified."""
         pilatus_image = self.data['images']
         filename = self.filename
@@ -588,16 +674,20 @@ class RIXSMap(BaseScan):
 
 
 
-            xas_spectrum = np.sum(RIXS_map[:, :-N], axis=1)  # projection onto incident energy axis while omitting the last 5px
+            cleaned_xas_spectrum = np.sum(RIXS_map[:, :-N], axis=1)  # projection onto incident energy axis while omitting the last 5px
 
             ax = axs[0, 1]
             ax.grid(visible=True, alpha=0.3)
             ax.set_title(f'Projected cleaned XAS for ROIs')
-            ax.plot(energy, xas_spectrum, label=f'Projected XAS for ROI {roi[0]}-{roi[1]}')
+            ax.plot(energy, cleaned_xas_spectrum, label=f'Projected XAS for ROI {roi[0]}-{roi[1]}')
             ax.set_xlabel('Incident Energy (eV)')
             ax.set_ylabel('Intensity')
             ax.legend()
 
+            save_plot(self, fig, descriptor=f"{self.filename}_XAS_projections")
+
+            if save:
+                save_xas_from_RIXS(self, roi, energy, xas_spectrum, cleaned_xas_spectrum)
 
                 #plot the rixs map without elastic peak
                 # ax = axs[0, 0]
@@ -691,7 +781,7 @@ class XESScan(BaseScan):
             ax.set_xlabel('Energy (eV)')
             ax.set_ylabel('Intensity')
             ax.legend()
-
+        save_plot(self, fig, descriptor=f"{self.filename}_XES")
 
 
 @dataclass
@@ -766,15 +856,15 @@ sample = Sample(
 
 sample.add_scans([7])
 sample.add_scans([8])
-sample.scans[8].plot()
-ROIS = sample.scans[7].auto_detect_ROI()
+sample.scans[8].plot(save=True)
+sample.scans[7].auto_detect_ROI(Plot=True)
 #important: always do energy calibration first, then slice or plot XAS from map
 sample.scans[7].energy_calibration(plot=True)
 sample.add_scans([9])
 sample.scans[9].energy_calibration_from_scan(sample.scans[7])
 sample.scans[9].plot()
-#sample.scans[7].slice()
-#sample.scans[7].project_XAS(remove_elastic=True)
+sample.scans[7].slice(save=True)
+sample.scans[7].project_XAS(remove_elastic=True, save=True)
 plt.show()
 
 
