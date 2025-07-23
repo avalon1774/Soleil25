@@ -144,6 +144,7 @@ class BaseScan:
     energy: Optional[np.ndarray] = None
     ROIs: Optional[np.ndarray] = None
     _preloaded_data: Optional[Dict] = None
+    source_scans: Optional[List[int]] = field(default_factory=list)
 
     def __post_init__(self):
         if self._preloaded_data is not None:
@@ -247,7 +248,7 @@ class BaseScan:
                 ax.set_ylabel('Summed intensity')
                 ax.legend()
             #plt.show()
-        save_plot(self, fig, descriptor=f"{self.filename}_calibration_summary")
+            save_plot(self, fig, descriptor=f"{self.filename}_calibration_summary")
 
         return ROIs
 
@@ -365,6 +366,15 @@ class RIXSMap(BaseScan):
             ax.set_xlim(min(E2), max(E2))
             ax.legend()
 
+            if hasattr(self, "source_scans") and self.source_scans:
+                ax.text(0.01, 0.99, f"From scans: {', '.join(map(str, self.source_scans))}",
+                        transform=ax.transAxes,
+                        fontsize=10,
+                        verticalalignment='top',
+                        horizontalalignment='left',
+                        color='gray'
+                        )
+
             plt.tight_layout()
             #plt.show()
             save_plot(self, fig, descriptor=f"{roi_id}_XES")
@@ -387,6 +397,7 @@ class RIXSMap(BaseScan):
 
 
         for roi in self.ROIs:
+            result = None
             roi_id = f"roi_{roi[0]}_{roi[1]}"
 
             cache_path = get_calibration_path(self, roi)
@@ -479,28 +490,55 @@ class RIXSMap(BaseScan):
                 fit_data = pd.DataFrame(fit_results)
                 # print(fit_data)
 
-                lin_model = LinearModel(prefix='lin_')
-                params = lin_model.make_params()
-                result = lin_model.fit(fit_data['energy'], params, x=fit_data['g_center'])
 
-                slope = result.params['lin_slope'].value
-                slope_err = result.params['lin_slope'].stderr or 1e-10
-                intercept = result.params['lin_intercept'].value
-                intercept_err = result.params['lin_intercept'].stderr or 1e-10
 
-                fit_text = (f"Slope = {slope:.4f} ± {slope_err:.4f}\n"
-                            f"Intercept = {intercept:.4f} ± {intercept_err:.4f}")
 
-                line = np.array([result.params['lin_slope'].value, result.params['lin_intercept'].value])
-                fwhm_e = fit_data['g_fwhm'] * result.params['lin_slope'].value
-                mean = np.mean(fwhm_e)
-                fit_data['e_fwhm'] = fwhm_e
+
+                if len(fit_data) >= 3:
+                    lin_model = LinearModel(prefix='lin_')
+                    params = lin_model.make_params()
+                    result = lin_model.fit(fit_data['energy'], params, x=fit_data['g_center'])
+
+                    slope = result.params['lin_slope'].value
+                    slope_err = result.params['lin_slope'].stderr or 1e-10
+                    intercept = result.params['lin_intercept'].value
+                    intercept_err = result.params['lin_intercept'].stderr or 1e-10
+
+                    fit_text = (f"Slope = {slope:.4f} ± {slope_err:.4f}\n"
+                                f"Intercept = {intercept:.4f} ± {intercept_err:.4f}")
+
+                    line = np.array([result.params['lin_slope'].value, result.params['lin_intercept'].value])
+                    fwhm_e = fit_data['g_fwhm'] * result.params['lin_slope'].value
+                    mean = np.mean(fwhm_e)
+                    fit_data['e_fwhm'] = fwhm_e
+
+                elif len(fit_data) == 2:
+                    x1, x2 = fit_data['g_center'].values
+                    y1, y2 = fit_data['energy'].values
+                    slope = (y2 - y1) / (x2 - x1)
+                    intercept = y1 - slope * x1
+
+                    fit_text = (f"Slope = {slope:.4f} (2-point)\n"
+                                f"Intercept = {intercept:.4f} (2-point)")
+
+                    logger.warning(f"Only 2 points available for calibration in ROI {roi_id} — using manual fit.")
+
+                else:
+                    logger.warning(f"Not enough data points for calibration in ROI {roi_id}. Skipping.")
+                    continue
 
                 if plot:
                     ax = axs[1, 0]
                     ax.set_title('Enegy calibration' + filename)
                     ax.scatter(fit_data['g_center'], fit_data['energy'], color='black', s=10)
-                    ax.plot(fit_data['g_center'], result.best_fit, color='red', label='fit')
+                    if len(fit_data) >= 3:
+                        ax.plot(fit_data['g_center'], result.best_fit, color='red', label='fit')
+                    else:
+                        x_vals = fit_data['g_center']
+                        y_vals = slope * x_vals + intercept
+                        ax.plot(x_vals, y_vals, color='red', label='manual 2-point fit')
+
+
                     ax.set_title(f'Elastic calibration {filename}')
                     ax.set_xlabel('Y pixels')
                     ax.grid(visible=True, alpha=0.3)
@@ -508,58 +546,49 @@ class RIXSMap(BaseScan):
                     ax.text(0.05, 0.95, fit_text, transform=ax.transAxes,
                             fontsize=12, verticalalignment='top',
                             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    if len(fit_data) >= 3:
+                        ax = axs[1, 1]
+                        ax.set_title('Gauss FWHM' + filename)
+                        ax.plot(calibrate_energy_ax(fit_data['g_center'], line),
+                                fit_data['g_fwhm'] * result.params['lin_slope'].value, color='black', label='fit')
 
-                    ax = axs[1, 1]
-                    ax.set_title('Gauss FWHM' + filename)
-                    ax.plot(calibrate_energy_ax(fit_data['g_center'], line),
-                            fit_data['g_fwhm'] * result.params['lin_slope'].value, color='black', label='fit')
+                        ax.set_title(f'Elastic peak width')
+                        ax.grid(visible=True, alpha=0.3)
+                        ax.axhline(y=mean, color='r', linestyle='--', alpha=0.7)
+                        ax.text(0.05, 0.95, f"Mean FWHM = {mean:.4f}", transform=ax.transAxes,
+                                fontsize=12, verticalalignment='top',
+                                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-                    ax.set_title(f'Elastic peak width')
-                    ax.grid(visible=True, alpha=0.3)
-                    ax.axhline(y=mean, color='r', linestyle='--', alpha=0.7)
-                    ax.text(0.05, 0.95, f"Mean FWHM = {mean:.4f}", transform=ax.transAxes,
-                            fontsize=12, verticalalignment='top',
-                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                        ax.set_xlabel('Incident Energy (eV)')
+                        ax.set_ylabel(f'FWHM (eV)')
 
-                    ax.set_xlabel('Incident Energy (eV)')
-                    ax.set_ylabel(f'FWHM (eV)')
+                        ax = axs[2, 0]
+                        ax.plot(fit_data['energy'], fit_data['g_intensities'], color='black')
+                        ax.set_title('Elastic peak Intensity')
+                        ax.set_xlabel('Incident Energy (eV)')
+                        ax.set_ylabel('Intensity')
+                        ax.grid(visible=True, alpha=0.3)
 
-                    ax = axs[2, 0]
-                    ax.plot(fit_data['energy'], fit_data['g_intensities'], color='black')
-                    ax.set_title('Elastic peak Intensity')
-                    ax.set_xlabel('Incident Energy (eV)')
-                    ax.set_ylabel('Intensity')
-                    ax.grid(visible=True, alpha=0.3)
+                        ax = axs[2, 1]
 
-                    ax = axs[2, 1]
+                        energy_shifts = np.array(np.polyval(line, fit_data['g_center']) - fit_data['energy'])
 
-                    energy_shifts = np.array(np.polyval(line, fit_data['g_center']) - fit_data['energy'])
+                        ax.plot(fit_data['energy'], energy_shifts, color='black')
+                        ax.set_title('Energy Shift (Calibrated-True)')
+                        ax.set_xlabel('Incident Energy (eV)')
+                        ax.set_ylabel('Energy Shift (eV)')
+                        ax.grid(visible=True, alpha=0.3)
+                        # ax.axhline(y=0, color='r', linestyle='--', alpha=0.7)
+                        ax.axhline(y=np.mean(energy_shifts), color='r', linestyle='--', alpha=0.7)  # Add zero-line reference
 
-                    ax.plot(fit_data['energy'], energy_shifts, color='black')
-                    ax.set_title('Energy Shift (Calibrated-True)')
-                    ax.set_xlabel('Incident Energy (eV)')
-                    ax.set_ylabel('Energy Shift (eV)')
-                    ax.grid(visible=True, alpha=0.3)
-                    # ax.axhline(y=0, color='r', linestyle='--', alpha=0.7)
-                    ax.axhline(y=np.mean(energy_shifts), color='r', linestyle='--', alpha=0.7)  # Add zero-line reference
-
-                    plt.tight_layout()
+                        plt.tight_layout()
 
                     save_plot(self, fig, descriptor=f"{roi_id}_calibration_summary")
-            # df = pd.DataFrame.from_dict(fit_data)
-
-
-             #self.calibration_line.append(np.array([slope, intercept]))
-
-
-            #self.calibration_data = fit_data #add the data about the gaussians into this to maybe reuse for later
-
-
 
 
             self.calibration_data[roi_id] = {
                 'line': (np.array([slope, intercept])),
-                'mean_fwhm': float(np.mean(fit_data['e_fwhm'])),
+                'mean_fwhm': float(np.mean(fit_data['e_fwhm'])) if 'e_fwhm' in fit_data else None,
                 'gaussians': fit_data
                }
 
@@ -740,7 +769,7 @@ class XESScan(BaseScan):
 
 
 
-    def plot(self):
+    def plot(self, save=True):
         summed_pilatus = np.sum(self.data['images'], axis=0)
         if not self.calibration:
             logger.warning('no calibration assigned to scan %s', self.filename)
@@ -774,14 +803,21 @@ class XESScan(BaseScan):
             ax.axvline(roi[0], color=color, linestyle='--')
             ax.axvline(roi[1], color=color, linestyle='--')
             ax = axs[0, 1]
-            ax.plot(E2, np.sum(pilatus_image[:, :, roi[0]:roi[1]], axis=(0, 2)), color=color,
+            XES = np.sum(pilatus_image[:, :, roi[0]:roi[1]], axis=(0, 2))
+            ax.plot(E2, XES, color=color,
                     label='ROI ' + str(roi[0]) + ' - ' + str(roi[1]) + '')
             ax.set_title(f'XES spectra')
             ax.grid(visible=True, alpha=0.3)
             ax.set_xlabel('Energy (eV)')
             ax.set_ylabel('Intensity')
             ax.legend()
+
+            save_xes_from_RIXS(self, roi, E2, XES, self.energy)
+
+
         save_plot(self, fig, descriptor=f"{self.filename}_XES")
+
+
 
 
 @dataclass
@@ -846,6 +882,44 @@ class Sample:
         print(df.to_string(index=False))
 
 
+    def combine_xes_scans(self, scan_numbers: List[int], tag: str = '') -> RIXSMap:
+        "combine multiple XES scans into one RIXSMap object"
+
+        xes_scans = [self.scans[n] for n in scan_numbers if n in self.scans and isinstance(self.scans[n], XESScan)]
+
+        if not xes_scans:
+            raise ValueError("No valid XESScans")
+
+        base_number=9000
+        while base_number in self.scans:
+            base_number += 1
+
+        images = np.stack([scan.data['images'][0] for scan in xes_scans], axis=0)
+        energies = np.array([scan.energy[0] for scan in xes_scans])
+
+        rixs = RIXSMap(
+            number=base_number,
+            filename=f"synthetic_RIXS_{base_number}{'_' + tag if tag else ''}.nxs",
+            sample=self,
+            type = 'sythetic RIXS',
+            data={
+                'images': images,
+                'energies': energies,
+                'scan_command': f"Combined XES scans {scan_numbers} with tag {tag}"
+            }
+        )
+
+        rixs.source_scans = [scan.number for scan in xes_scans]
+        self.scans[base_number] = rixs
+
+        logger.info(f"[Synthetic] Combined {len(xes_scans)} XES scans into synthetic RIXS scan #{base_number}")
+        return rixs
+
+
+
+
+
+
 sample = Sample(
     electrode_id=1,
     name="Electrode before cycling",
@@ -855,16 +929,25 @@ sample = Sample(
 
 
 sample.add_scans([7])
-sample.add_scans([8])
-sample.scans[8].plot(save=True)
-sample.scans[7].auto_detect_ROI(Plot=True)
+#sample.add_scans([8])
+#sample.scans[8].plot(save=True)
+sample.scans[7].auto_detect_ROI(Plot=False)
 #important: always do energy calibration first, then slice or plot XAS from map
 sample.scans[7].energy_calibration(plot=True)
 sample.add_scans([9])
 sample.scans[9].energy_calibration_from_scan(sample.scans[7])
-sample.scans[9].plot()
-sample.scans[7].slice(save=True)
-sample.scans[7].project_XAS(remove_elastic=True, save=True)
+#sample.scans[9].plot()
+#sample.scans[7].slice(save=True)
+#sample.scans[7].project_XAS(remove_elastic=True, save=True)
+
+sample.add_scans([12,14])
+sample.scans[12].energy_calibration_from_scan(sample.scans[7])
+sample.scans[14].energy_calibration_from_scan(sample.scans[7])
+sample.combine_xes_scans([14,12,9], tag='testE')
+sample.scans[9000].auto_detect_ROI()
+sample.scans[9000].energy_calibration()
+sample.scans[9000].slice(sample.scans[9000].data['energies'], save = True)
+
 plt.show()
 
 
