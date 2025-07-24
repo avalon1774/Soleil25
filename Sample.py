@@ -196,7 +196,9 @@ class BaseScan:
 
 
     def auto_detect_ROI(self, threshold: float = 0.4, Plot = True, min_region_width: int=5):
-        self.ROIs = []
+        self.ROIs = {}
+        ROIs_found = []
+
         pilatus_image = self.data['images']
         summed_pilatus = np.sum(pilatus_image, axis=0)
 
@@ -221,8 +223,10 @@ class BaseScan:
 
         for start, end in zip(rising_edges, falling_edges):
             if end - start >= min_region_width:
+                roi_id = f"ROI{len(ROIs_found) + 1}"
+                ROIs_found.append((roi_id, (start, end)))
                 ROIs.append((start, end))
-                self.ROIs.append((start, end))
+                #self.ROIs.append((start, end))
 
 
         if Plot:
@@ -250,7 +254,16 @@ class BaseScan:
             #plt.show()
             save_plot(self, fig, descriptor=f"{self.filename}_calibration_summary")
 
-        return ROIs
+        for roi_id, roi_tuple in ROIs_found:
+            self.ROIs[roi_id] = roi_tuple
+        return self.ROIs
+
+    def add_roi(self, start: int, end: int):
+        if not hasattr(self, "ROIs") or self.ROIs is None:
+            self.ROIs = {}
+        roi_id = f"ROI{len(self.ROIs) + 1}"
+        self.ROIs[roi_id] = (start, end)
+        logger.info(f"Added manual ROI {roi_id}: ({start}, {end})")
 
 @dataclass
 class XASScan(BaseScan):
@@ -331,7 +344,8 @@ class RIXSMap(BaseScan):
 
         for roi in self.ROIs:
             slices = []
-            roi_id = f"roi_{roi[0]}_{roi[1]}"
+            #roi_id = f"roi_{roi[0]}_{roi[1]}"
+            roi_id = f"ROI{len(ROIs_found) + 1}"
             pixel_calibration = self.calibration_data[roi_id]['line']
             E2 = np.polyval(pixel_calibration, np.arange(0, 195))
 
@@ -399,7 +413,8 @@ class RIXSMap(BaseScan):
         for roi in self.ROIs:
             result = None
             roi_id = f"roi_{roi[0]}_{roi[1]}"
-
+            roi_id = f"ROI{len(ROIs_found) + 1}"
+            
             cache_path = get_calibration_path(self, roi)
 
             if roi_id in self.calibration_data:
