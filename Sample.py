@@ -93,12 +93,12 @@ def read_nxs_file(filename):
     return out
 
 
-def save_xas_from_RIXS(scan: 'RIXSMap', roi, energy, rw_xas, cleaned_xas):
+def save_xas_from_RIXS(scan: 'RIXSMap', roi_id, energy, rw_xas, cleaned_xas):
     df = pd.DataFrame({
         'incident_energy': energy,
         'raw_xas': rw_xas,
         'cleaned_xas': cleaned_xas})
-    path = get_spectrum_path(scan, roi, kind='pilatus_xas')
+    path = get_spectrum_path(scan, roi_id, kind='pilatus_xas')
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
     logger.info(f"Saved XAS from sample {scan.filename} into {path}")
@@ -114,12 +114,12 @@ def save_amptek(scan: 'XASScan',roi, energy, intensity):
     df.to_csv(path, index=False)
     logger.info(f"Saved XAS from sample {scan.filename}  into {path}")
 
-def save_xes_from_RIXS(scan: 'RIXSMap', roi, emitted_energy, slices: np.ndarray, energies: list):
+def save_xes_from_RIXS(scan: 'RIXSMap', roi_id, emitted_energy, slices: np.ndarray, energies: list):
     'save all requested slices (at energies) into one file'
     df = pd.DataFrame(slices.T, columns = [f"{e:.2f} eV" for e in energies])
     df.insert(0, 'emision energy', emitted_energy)
     # Add emitted energy as the first column
-    path = get_spectrum_path(scan, roi, kind='pilatus_xes')
+    path = get_spectrum_path(scan, roi_id, kind='pilatus_xes')
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
     logger.info(f"Saved XES slices from sample {scan.filename} into {path}")
@@ -342,10 +342,11 @@ class RIXSMap(BaseScan):
         energy = self.data['energies']
         filename = self.filename
 
-        for roi in self.ROIs:
+        for roi_id, roi in self.ROIs.items():
             slices = []
             #roi_id = f"roi_{roi[0]}_{roi[1]}"
-            roi_id = f"ROI{len(ROIs_found) + 1}"
+            #roi_id = f"ROI{len(ROIs_found) + 1}"
+
             pixel_calibration = self.calibration_data[roi_id]['line']
             E2 = np.polyval(pixel_calibration, np.arange(0, 195))
 
@@ -393,7 +394,7 @@ class RIXSMap(BaseScan):
             #plt.show()
             save_plot(self, fig, descriptor=f"{roi_id}_XES")
             if save:
-                save_xes_from_RIXS(self, roi, E2, np.array(slices), absorption_energy)
+                save_xes_from_RIXS(self, roi_id, E2, np.array(slices), absorption_energy)
 
 
 
@@ -410,12 +411,12 @@ class RIXSMap(BaseScan):
         filename = self.filename
 
 
-        for roi in self.ROIs:
+        for roi_id, roi in self.ROIs.items():
             result = None
-            roi_id = f"roi_{roi[0]}_{roi[1]}"
-            roi_id = f"ROI{len(ROIs_found) + 1}"
-            
-            cache_path = get_calibration_path(self, roi)
+            #roi_id = f"roi_{roi[0]}_{roi[1]}"
+            #roi_id = f"ROI{len(ROIs_found) + 1}"
+
+            cache_path = get_calibration_path(self, roi_id)
 
             if roi_id in self.calibration_data:
                 logger.info(f"Calibration already exists for ROI: {roi_id}.")
@@ -427,7 +428,7 @@ class RIXSMap(BaseScan):
                 continue
 
             else:
-                logger.info(f"Calibrating energy for ROI: {roi_id}.")
+                logger.info(f"Calibrating energy for {roi_id}: {roi[0]}-{roi[1]}")
 
 
                 pilatus_sum = np.sum(pilatus_image[:, :, roi[0]:roi[1]], axis=2)
@@ -604,8 +605,10 @@ class RIXSMap(BaseScan):
             self.calibration_data[roi_id] = {
                 'line': (np.array([slope, intercept])),
                 'mean_fwhm': float(np.mean(fit_data['e_fwhm'])) if 'e_fwhm' in fit_data else None,
-                'gaussians': fit_data
-               }
+                'gaussians': fit_data,
+                'roi_id': roi_id,
+                'roi_pixels': roi
+            }
 
             logger.info(f"Calibration for scan {self.number}. "
                    f"Slope: {slope:.4f}, "
@@ -614,7 +617,7 @@ class RIXSMap(BaseScan):
 
 
             if save:
-                path = get_calibration_path(self, roi)
+                path = get_calibration_path(self, roi_id)
                 save_pickle(self.calibration_data[roi_id], path)
 
 
@@ -672,9 +675,11 @@ class RIXSMap(BaseScan):
         filename = self.filename
         fig, axs = plt.subplots(1, 2, figsize=(16, 7), squeeze=False)
 
-        for roi in self.ROIs:
+        for roi_id, roi in self.ROIs.items():
+            if roi_id not in self.calibration_data:
+                raise ValueError(f"No calibration data found for ROI {roi_id}")
 
-            roi_id = f"roi_{roi[0]}_{roi[1]}"
+            #roi_id = f"roi_{roi[0]}_{roi[1]}"
             pixel_calibration = self.calibration_data[roi_id]['line']
             energy = self.data['energies']
 
@@ -731,7 +736,7 @@ class RIXSMap(BaseScan):
             save_plot(self, fig, descriptor=f"{self.filename}_XAS_projections")
 
             if save:
-                save_xas_from_RIXS(self, roi, energy, xas_spectrum, cleaned_xas_spectrum)
+                save_xas_from_RIXS(self, roi_id, energy, xas_spectrum, cleaned_xas_spectrum)
 
                 #plot the rixs map without elastic peak
                 # ax = axs[0, 0]
@@ -768,17 +773,23 @@ class XESScan(BaseScan):
         #self.ROIs = RIXSscan.ROIs
 
         cache_dir = get_scan_dir(RIXSscan)
+
+        if self.ROIs is None:
+            self.ROIs = {}
+
+
         for file in cache_dir.glob('calibration_*.pkl'):
                 result = load_pickle(file)
-                roi_left = int(file.stem.split('_')[1])
-                roi_right = int(file.stem.split('_')[2])
+                roi_left, roi_right = result['roi_pixels']
+                roi_id = result['roi_id']
 
-                roi_id = f"roi_{roi_left}_{roi_right}"
+                #roi_id = f"roi_{roi_left}_{roi_right}"
                 self.calibration[roi_id] = result
-                if self.ROIs == None:
-                    self.ROIs = [(roi_left, roi_right)]
-                else:
-                    self.ROIs.append((roi_left, roi_right))
+
+                if self.ROIs is None:
+                    self.ROIs = {}
+
+                self.ROIs[roi_id] = (roi_left, roi_right)
 
 
 
@@ -800,8 +811,8 @@ class XESScan(BaseScan):
         fig.colorbar(im, ax=ax)
         colors = ['red', 'green', 'blue', 'orange', 'purple']
 
-        for roi, color in zip(self.ROIs, colors):
-            roi_id = f"roi_{roi[0]}_{roi[1]}"
+        for (roi_id, roi), color in zip(self.ROIs.items(), colors):
+            #roi_id = f"roi_{roi[0]}_{roi[1]}"
             if roi_id not in self.calibration:
                 logger.warning(f"No calibration data found for ROI {roi_id}. Skipping plot.")
                 continue
@@ -827,7 +838,7 @@ class XESScan(BaseScan):
             ax.set_ylabel('Intensity')
             ax.legend()
 
-            save_xes_from_RIXS(self, roi, E2, XES, self.energy)
+            save_xes_from_RIXS(self, roi_id, E2, XES, self.energy)
 
 
         save_plot(self, fig, descriptor=f"{self.filename}_XES")
@@ -944,16 +955,16 @@ sample = Sample(
 
 
 sample.add_scans([7])
-#sample.add_scans([8])
-#sample.scans[8].plot(save=True)
+sample.add_scans([8])
+sample.scans[8].plot(save=True)
 sample.scans[7].auto_detect_ROI(Plot=False)
 #important: always do energy calibration first, then slice or plot XAS from map
 sample.scans[7].energy_calibration(plot=True)
 sample.add_scans([9])
 sample.scans[9].energy_calibration_from_scan(sample.scans[7])
-#sample.scans[9].plot()
-#sample.scans[7].slice(save=True)
-#sample.scans[7].project_XAS(remove_elastic=True, save=True)
+sample.scans[9].plot()
+sample.scans[7].slice(save=True)
+sample.scans[7].project_XAS(remove_elastic=True, save=True)
 
 sample.add_scans([12,14])
 sample.scans[12].energy_calibration_from_scan(sample.scans[7])
