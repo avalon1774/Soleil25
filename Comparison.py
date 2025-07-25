@@ -30,4 +30,19 @@ class ComparisonSet:
 
 
 def load_amptek_xas(scan: XASScan) -> pd.DataFrame:
+    df = pd.read_csv(get_spectrum_path(scan, roi=None, kind='amptek_xas'))
+    df['scan'] = scan.number
+    return df
+
+def load_pilatus_xas(scan: RIXSMap, roi: tuple) -> pd.DataFrame:
     df = pd.read_csv(get_spectrum_path(scan, roi, kind='pilatus_xas'))
+    df['scan'] = scan.number
+    return df
+
+def load_pilatus_xes(scan: RIXSMap, roi: tuple, absorption_energy: float) -> pd.Series:
+    df = pd.read_csv(get_spectrum_path(scan, roi, kind='pilatus_xes'))
+    col = min(df.columns[1:], key=lambda c: abs(float(c.split()[0]) - absorption_energy))
+    series = df[['emision energy', col]].copy()
+    series.columns = ['emission_energy', 'intensity']
+    series['scan'] = scan.number
+    return series
