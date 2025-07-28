@@ -267,6 +267,7 @@ class BaseScan:
 
 @dataclass
 class XASScan(BaseScan):
+    xas_data: Dict[str, Any] = field(default_factory=dict, init=False)
     def plot(self, save=False):
         """Plot the XAS spectrum.
         1. summed amptek images
@@ -320,7 +321,10 @@ class XASScan(BaseScan):
 
         plt.tight_layout()
 
-
+        self.xas_data = {
+            "incident_energy": self.data["position"],
+            "intensity": Amptek_roi
+        }
 
     def normalize_spectrum(self):
         # XAS-specific method
@@ -339,7 +343,7 @@ class RIXSMap(BaseScan):
         self.xes_slices = {}
         """returns the slices of the map at energies specified in absorption_energy list"""
         if absorption_energy is None:
-            absorption_energy = [2460,2469.5,2471,2472] #default values
+            absorption_energy = [2460,2469.5,2471,2472,2481,2495] #default values
 
         pilatus_image = self.data['images']
         energy = self.data['energies']
@@ -496,7 +500,7 @@ class RIXSMap(BaseScan):
                         'bkg_c1': result.params['bkg_c1'].value,
                     })
 
-                    if plot and j % 50 == 0:
+                    if plot and j % 25 == 0:
                         ax = axs[0, 1]
                         ax.plot(x, y, color='black')
                         # ax.plot(x_fit, result.best_fit, color = 'red', label = 'fit')
@@ -776,7 +780,7 @@ def calibrate_energy_ax(data, line):
 class XESScan(BaseScan):
     calibration: Dict[str, Any] = field(default_factory=dict, init=False)  # dictionary of roi and calibration data, e.g. {'roi_1_2': {'line': [slope, intercept], 'mean_fwhm': 0.5, 'gaussians': pd.DataFrame}} = None
     #need to take energy calibration from somewwhere.
-
+    xes_data: Dict[str, Any] = field(default_factory=dict, init=False)
       # sum over all energies, if tere is only one then fine
 
 
@@ -853,7 +857,14 @@ class XESScan(BaseScan):
             ax.legend()
 
             save_xes_from_RIXS(self, roi_id, E2, XES, self.energy)
+            if not hasattr(self, "xes_data"):
+                self.xes_data = {}
 
+            self.xes_data[roi_id] = {
+                "incident_energy": self.energy,
+                "emitted_energy": E2,
+                "intensity": XES
+            }
 
         save_plot(self, fig, descriptor=f"{self.filename}_XES")
 
@@ -867,6 +878,7 @@ class Sample:
     cycle_info: str
     scans: Dict[int, 'BaseScan'] = field(default_factory=dict)
     metadata: Dict = field(default_factory=dict)
+
 
     def _generate_filename(self, scan_number: int) -> str:
         return f"Electrode_{self.electrode_id:02d}_{scan_number:04d}.nxs"
@@ -891,8 +903,8 @@ class Sample:
             else:
                 scan = BaseScan(number=scan_number, filename=filename, sample=self,type=scan_type,_preloaded_data=temp_scan.data)
 
-            if energy:
-                scan.energy = energy
+            if energy is not None:
+                scan.data['energies'] = energy
 
 
             self.scans[scan_number] = scan
@@ -957,70 +969,96 @@ class Sample:
         logger.info(f"[Synthetic] Combined {len(xes_scans)} XES scans into synthetic RIXS scan #{base_number}")
         return rixs
 
+    def combine_xes_scans_by_time(self, scan_numbers: List[int], scan_times = List[float], tag: str = ''):
+        """combine xes scans taken at the same energy into one object that can then be exported. Calibration will be dependant on RIXS scan
+        result is a list. first column energy axis, next columns each XES scan in a series"""
+        xes_scans = [self.scans[n] for n in scan_numbers if n in self.scans and isinstance(self.scans[n], XESScan)]
+        if len(xes_scans) != len(scan_times):
+            raise ValueError("Mismatch between number of scans and scan_times")
+
+
+        ref_scan = xes_scans[0]
+        roi_ids = list(ref_scan.ROIs.keys())
+        roi_series_dict = {}
+
+        for roi_id in roi_ids:
+            all_emitted_energy = []
+            all_intensities = []
+            for scan in xes_scans:
+                if roi_id not in scan.xes_data:
+                    logger.warning(f"ROI {roi_id} not found in scan {scan.number}. Skipping.")
+                    continue
+
+                xes = scan.xes_data[roi_id]
+                intensity = xes["intensity"]
+                emitted_energy = xes["emitted_energy"]
+
+
+                all_emitted_energy.append(emitted_energy)
+                all_intensities.append(intensity)
+
+
+
+        for scan in xes_scans:
+
+        pass
+
+
 def export_hd5(sample: 'Sample', filepath: Path) -> None:
-    """Export all initialized scans to a single HDF5 file."""
     with h5py.File(filepath, "w") as h5file:
-        # ───────────────
-        # 1. Metadata
-        # ───────────────
         meta_grp = h5file.create_group("metadata")
         meta_grp.create_dataset("name", data=sample.name)
         meta_grp.create_dataset("electrode_id", data=sample.electrode_id)
         meta_grp.create_dataset("cycle_info", data=sample.cycle_info)
 
-        # ───────────────
-        # 2. Scans
-        # ───────────────
         scans_grp = h5file.create_group("scans")
 
         for scan_number, scan in sample.scans.items():
             scan_grp = scans_grp.create_group(f"{scan_number:04d}")
             scan_grp.attrs["type"] = scan.type or "Unknown"
 
-            # Optional: include scan-level metadata
-            if scan.energy is not None:
-                scan_grp.create_dataset("incident_energy", data=scan.energy)
-
-            # ───────────────
-            # 3. ROIs
-            # ───────────────
-            if scan.ROIs:
-                rois_grp = scan_grp.create_group("ROIs")
-                for roi_id, roi_tuple in scan.ROIs.items():
-                    roi_grp = rois_grp.create_group(roi_id)
-                    roi_grp.attrs["pixels"] = roi_tuple
-
-                    # Calibration
-                    calib = None
-                    if hasattr(scan, "calibration_data"):
+            # =============== RIXSMap ===============
+            if isinstance(scan, RIXSMap):
+                if scan.ROIs:
+                    rois_grp = scan_grp.create_group("ROIs")
+                    for roi_id, roi_tuple in scan.ROIs.items():
+                        roi_grp = rois_grp.create_group(roi_id)
+                        roi_grp.attrs["pixels"] = roi_tuple
+                        # Calibration
                         calib = scan.calibration_data.get(roi_id)
-                    elif hasattr(scan, "calibration"):
-                        calib = scan.calibration.get(roi_id)
+                        if calib:
+                            cal_grp = roi_grp.create_group("calibration")
+                            cal_grp.create_dataset("line", data=calib["line"])
+                            if calib.get("mean_fwhm") is not None:
+                                cal_grp.create_dataset("mean_fwhm", data=calib["mean_fwhm"])
+                        # XAS
+                        if roi_id in scan.xas_data:
+                            xas = scan.xas_data[roi_id]
+                            roi_grp.create_dataset("XAS_raw",data=np.stack([xas["incident_energy"], xas["raw"]], axis=1))
+                            roi_grp.create_dataset("XAS_clean",data=np.stack([xas["incident_energy"], xas["clean"]], axis=1))
+                        # XES
+                        if roi_id in scan.xes_slices:
+                            xes = scan.xes_slices[roi_id]
+                            xes_grp = roi_grp.create_group("XES_slices")
+                            for energy_label, slice_data in xes["slices"].items():
+                                energy_value = float(energy_label)
+                                spectrum = np.stack([xes["emitted_energy"], slice_data], axis=1)
+                                xes_grp.create_dataset(f"{energy_label}", data=spectrum)
 
-                    if calib:
-                        cal_grp = roi_grp.create_group("calibration")
-                        cal_grp.create_dataset("line", data=calib["line"])
-                        cal_grp.create_dataset("mean_fwhm", data=calib["mean_fwhm"])
-                        if "gaussians" in calib:
-                            df = calib["gaussians"]
-                            for col in df.columns:
-                                cal_grp.create_dataset(f"gaussians/{col}", data=df[col].values)
+            # =============== XASScan ===============
+            elif isinstance(scan, XASScan):
+                xas = scan.xas_data
+                xas_grp = scan_grp.create_group("Amptek_XAS")
+                spectrum = np.stack([xas["incident_energy"], xas["intensity"]], axis=1)
+                xas_grp.create_dataset("spectrum", data=spectrum)
 
-                    # XAS
-                    if hasattr(scan, "xas_data") and roi_id in scan.xas_data:
-                        xas = scan.xas_data[roi_id]
-                        roi_grp.create_dataset("XAS_raw", data=xas["raw"])
-                        roi_grp.create_dataset("XAS_clean", data=xas["clean"])
-                        roi_grp.create_dataset("incident_energy", data=xas["incident_energy"])
-
-                    # XES slices
-                    if hasattr(scan, "xes_slices") and roi_id in scan.xes_slices:
-                        xes = scan.xes_slices[roi_id]
-                        xes_grp = roi_grp.create_group("XES_slices")
-                        xes_grp.create_dataset("emitted_energy", data=xes["emitted_energy"])
-                        for energy_label, slice_data in xes["slices"].items():
-                            xes_grp.create_dataset(f"slices/{energy_label}", data=slice_data)
-
+            # =============== XESScan ===============
+            elif isinstance(scan, XESScan):
+                xes_grp = scan_grp.create_group("XES")
+                for roi_id, roi in scan.ROIs.items():
+                    xes = scan.xes_data[roi_id]
+                    spectrum = np.stack([xes["emitted_energy"], xes["intensity"]], axis=1)
+                    xes_grp.create_dataset(f"{roi_id}", data=spectrum)
 
 sample = Sample(
     electrode_id=1,
@@ -1033,6 +1071,7 @@ sample = Sample(
 sample.add_scans([7])
 sample.add_scans([8])
 sample.scans[8].plot(save=True)
+
 sample.scans[7].auto_detect_ROI(Plot=False)
 #important: always do energy calibration first, then slice or plot XAS from map
 sample.scans[7].energy_calibration(plot=True)
@@ -1044,11 +1083,14 @@ sample.scans[7].project_XAS(remove_elastic=True, save=True)
 
 sample.add_scans([12,14])
 sample.scans[12].energy_calibration_from_scan(sample.scans[7])
+sample.scans[12].plot()
 sample.scans[14].energy_calibration_from_scan(sample.scans[7])
+sample.scans[14].plot()
 sample.combine_xes_scans([14,12,9], tag='testE')
 sample.scans[9000].auto_detect_ROI()
 sample.scans[9000].energy_calibration()
 sample.scans[9000].slice(sample.scans[9000].data['energies'], save = True)
+
 
 plt.show()
 
