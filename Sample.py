@@ -137,11 +137,12 @@ def save_plot(scan: 'BaseScan', fig: plt.Figure, descriptor: str = "plot"):
 class BaseScan:
     number: int
     filename: str
-    sample: 'Sample'
+    #sample: 'Sample'
 
     data: Optional[Dict] = None
     type: str = None
     energy: Optional[np.ndarray] = None
+    electrode_id: Optional[int] = None
     ROIs: Optional[np.ndarray] = None
     _preloaded_data: Optional[Dict] = None
     source_scans: Optional[List[int]] = field(default_factory=list)
@@ -887,7 +888,7 @@ class Sample:
     def add_scans(self, scan_numbers: np.ndarray, energy: Optional[np.ndarray]=None) -> None:
         for scan_number in scan_numbers:
             filename = self._generate_filename(scan_number)
-            temp_scan = BaseScan(number=scan_number, filename=filename, sample=self)
+            temp_scan = BaseScan(number=scan_number, filename=filename, electrode_id=self.electrode_id)
             if not temp_scan.data:
                 logger.warning("Skipping %s due to load failure", filename)
                 continue
@@ -895,14 +896,14 @@ class Sample:
             scan_type = temp_scan.detect_type()
 
             if scan_type == 'XAS Scan':
-                scan = XASScan(number=scan_number, filename=filename, sample=self, type=scan_type, _preloaded_data=temp_scan.data
+                scan = XASScan(number=scan_number, filename=filename, electrode_id=self.electrode_id, type=scan_type, _preloaded_data=temp_scan.data
 )
             elif scan_type == 'RIXS map':
-                scan = RIXSMap(number=scan_number, filename=filename, sample=self,type=scan_type,_preloaded_data=temp_scan.data)
+                scan = RIXSMap(number=scan_number, filename=filename, electrode_id=self.electrode_id,type=scan_type,_preloaded_data=temp_scan.data)
             elif scan_type == 'XES Scan':
-                scan = XESScan(number=scan_number, filename=filename, sample=self,type=scan_type,_preloaded_data=temp_scan.data)
+                scan = XESScan(number=scan_number, filename=filename, electrode_id=self.electrode_id,type=scan_type,_preloaded_data=temp_scan.data)
             else:
-                scan = BaseScan(number=scan_number, filename=filename, sample=self,type=scan_type,_preloaded_data=temp_scan.data)
+                scan = BaseScan(number=scan_number, filename=filename, electrode_id=self.electrode_id,type=scan_type,_preloaded_data=temp_scan.data)
 
             if energy is not None:
                 scan.data['energies'] = energy

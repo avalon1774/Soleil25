@@ -45,8 +45,7 @@ def get_sample_dir(sample: 'Sample') -> Path:
     return CACHE_DIR/f"{sample_id}"
 
 def get_scan_dir(scan: 'BaseScan') -> Path:
-    sample_id = get_sample_dir(scan.sample)
-    return sample_id/f"scan_{scan.number:04d}"
+    return Path(f"cache/Electrode_{scan.electrode_id:03d}/scan_{scan.number:04d}")
 
 def get_hash_from_params(params: Dict) -> str:
     """if i want to tag a particular saved cache """
