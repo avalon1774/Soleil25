@@ -952,11 +952,13 @@ class Sample:
 
         images = np.stack([scan.data['images'][0] for scan in xes_scans], axis=0)
         energies = np.array([scan.energy[0] for scan in xes_scans])
+        el_id = xes_scans[0].electrode_id
 
         rixs = RIXSMap(
             number=base_number,
             filename=f"synthetic_RIXS_{base_number}{'_' + tag if tag else ''}.nxs",
-            sample=self,
+            #sample=self,
+            electrode_id=el_id,
             type = 'sythetic RIXS',
             data={
                 'images': images,
@@ -1101,22 +1103,35 @@ def export_hd5(sample: 'Sample', filepath: Path, xes_series = None) -> None:
                     roi_grp.create_dataset("spectrum_labels", data=np.array(df.columns.astype(str), dtype="S"))
 
 
+
 sample = Sample(
-    electrode_id=18,
-    name="30VC",
-    cycle_info="6th cycle")
+    electrode_id=1,
+    name="Electrode before cycling",
+    cycle_info="1st cycle")
 
 
 
 
+sample.add_scans([7])
 sample.add_scans([8])
+sample.scans[8].plot(save=True)
 
+sample.scans[7].auto_detect_ROI(Plot=False)
+#important: always do energy calibration first, then slice or plot XAS from map
+sample.scans[7].energy_calibration(plot=True, save=True)
+sample.add_scans([9])
+sample.scans[9].energy_calibration_from_scan(sample.scans[7])
+sample.scans[9].plot()
+sample.scans[7].slice(save=True)
+sample.scans[7].project_XAS(remove_elastic=True, save=True)
 
-sample.scans[8].auto_detect_ROI(Plot=False)
-sample.scans[8].energy_calibration(plot=True)
-sample.scans[8].slice(save=True)
-sample.scans[8].project_XAS(remove_elastic=True, save=True)
-
+sample.add_scans([12,14])
+sample.scans[12].energy_calibration_from_scan(sample.scans[7])
+sample.scans[14].energy_calibration_from_scan(sample.scans[7])
+sample.combine_xes_scans([14,12,9], tag='testE')
+sample.scans[9000].auto_detect_ROI()
+sample.scans[9000].energy_calibration()
+sample.scans[9000].slice(sample.scans[9000].data['energies'], save = True)
 
 plt.show()
 
