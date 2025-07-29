@@ -4,7 +4,6 @@ import pickle
 from pathlib import Path
 from typing import Any, Dict, Tuple, Optional, Union
 import logging
-import shutil
 __cache_utils__ = "cache_utils"
 
 logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(message)s')
@@ -55,12 +54,12 @@ def get_hash_from_params(params: Dict) -> str:
     return hashlib.md5(string.encode()).hexdigest()[:8]
 
 
-def get_calibration_path(scan: 'BaseScan', roi_id: str, kind: str = "xas", params: Dict = None) -> Path:
-    #roi_str = f"{roi[0]}_{roi[1]}"
+def get_calibration_path(scan: 'BaseScan', roi: Tuple[int, int], kind: str = "xas", params: Dict = None) -> Path:
+    roi_str = f"{roi[0]}_{roi[1]}"
     suffix = ""
     if params:
         suffix = f"_{get_hash_from_parameters(params)}"
-    return get_scan_dir(scan) / f"calibration_{roi_id}{suffix}.pkl"
+    return get_scan_dir(scan) / f"calibration_{roi_str}{suffix}.pkl"
 
 
 def get_plot_path(scan: 'BaseScan', descriptor: str = 'plot') -> Path:
@@ -74,12 +73,12 @@ def get_plot_path(scan: 'BaseScan', descriptor: str = 'plot') -> Path:
 #     #rois all all saved in a .json file in the scan directory
 #     return get_scan_dir(scan) / "roi.json"
 
-def get_spectrum_path(scan: 'BaseScan', roi_id: str, kind:str = "xas", params: Dict = None) -> Path:
-    #roi_str = f"{roi[0]}_{roi[1]}"
+def get_spectrum_path(scan: 'BaseScan', roi: Tuple[int,int], kind:str = "xas", params: Dict = None) -> Path:
+    roi_str = f"{roi[0]}_{roi[1]}"
     suffix = ""
     if params:
         suffix = f"_{get_hash_from_params(params)}"
-    return get_scan_dir(scan) / f"spectrum_{roi_id}_{kind}{suffix}.csv"
+    return get_scan_dir(scan) / f"spectrum_{roi_str}_{kind}{suffix}.csv"
 
 
 def clean_scan_cache(sample: 'BaseScan') -> None:
@@ -96,7 +95,7 @@ def clean_scan_cache(sample: 'BaseScan') -> None:
     else:
         logger.warning("Scan directory %s does not exist", scan_dir)
 
-def safe_clean_sample_cache(sample: 'Sample') -> None:
+def clean_sample_cache(sample: 'Sample') -> None:
     """Remove all cached data for a sample."""
     sample_dir = get_sample_dir(sample)
     if sample_dir.exists():
@@ -109,12 +108,3 @@ def safe_clean_sample_cache(sample: 'Sample') -> None:
         sample_dir.rmdir() # Remove the sample directory itself
     else:
         logger.warning("Sample directory %s does not exist", sample_dir)
-
-def clean_sample_cache(sample: 'Sample') -> None:
-    """Remove all cached data for a sample."""
-    sample_dir = get_sample_dir(sample)
-    if sample_dir.exists():
-        logger.info("Cleaning cache for sample %s", sample.electrode_id)
-        shutil.rmtree(sample_dir)
-    else:
-        logger.warning("No cache found for sample %s", sample.electrode_id)

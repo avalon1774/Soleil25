@@ -14,7 +14,7 @@ from lmfit.models import PolynomialModel, GaussianModel, LinearModel, Lorentzian
 import pandas as pd
 import warnings
 
-from cache_utils import get_scan_dir
+from cache_utils import get_scan_dir, get_sample_dir
 
 warnings.filterwarnings("ignore", message="Using UFloat objects with std_dev==0.*")   #idk where this error comes from but now I don't see it anymore so eh...
 
@@ -767,6 +767,7 @@ class RIXSMap(BaseScan):
                 # ax.set_xlim(min(E2), max(E2))
 
 
+
 def calibrate_energy_ax(data, line):
     data = np.array(data)
     k = line[0]
@@ -969,9 +970,9 @@ class Sample:
         logger.info(f"[Synthetic] Combined {len(xes_scans)} XES scans into synthetic RIXS scan #{base_number}")
         return rixs
 
-    def combine_xes_scans_by_time(self, scan_numbers: List[int], scan_times = List[float], tag: str = ''):
+    def combine_xes_scans_by_time(self, scan_numbers: List[int], scan_times = List[float], tag: str = "XES_time_series"):
         """combine xes scans taken at the same energy into one object that can then be exported. Calibration will be dependant on RIXS scan
-        result is a list. first column energy axis, next columns each XES scan in a series"""
+        result is a dictionary where each roi contains spectra from multiple scans labeled by timestamp and scan number"""
         xes_scans = [self.scans[n] for n in scan_numbers if n in self.scans and isinstance(self.scans[n], XESScan)]
         if len(xes_scans) != len(scan_times):
             raise ValueError("Mismatch between number of scans and scan_times")
@@ -979,32 +980,62 @@ class Sample:
 
         ref_scan = xes_scans[0]
         roi_ids = list(ref_scan.ROIs.keys())
-        roi_series_dict = {}
+        combined_data =  {}
 
-        for roi_id in roi_ids:
-            all_emitted_energy = []
-            all_intensities = []
-            for scan in xes_scans:
-                if roi_id not in scan.xes_data:
-                    logger.warning(f"ROI {roi_id} not found in scan {scan.number}. Skipping.")
-                    continue
+        fig, axs = plt.subplots(len(roi_ids),2, figsize=(16, 16), squeeze=False)
 
+
+        for n,roi_id in enumerate(roi_ids):
+            # Get emitted_energy from first scan (they're assumed identical)
+
+            emitted_energy = xes_scans[0].xes_data[roi_id]["emitted_energy"]
+            data = {"emitted_energy": emitted_energy
+            }
+            integral_under_XES = []
+
+            for scan, time in zip(xes_scans, scan_times):
                 xes = scan.xes_data[roi_id]
                 intensity = xes["intensity"]
-                emitted_energy = xes["emitted_energy"]
+                col_label = f"{scan.number} ({time:.1f} s)"
+                data[col_label] = intensity
+
+                ax = axs[n, 0]
+                ax.set_title(f"emission for {roi_id}")
+                ax.plot(emitted_energy, intensity, label = col_label)
+                ax.set_xlabel('Emission energy [eV]')
+                ax.set_ylabel('Intensity')
+                ax.grid(visible=True, alpha=0.3)
+                ax.legend()
+
+                emin = 2455
+                emax =  2475
+                mask = (emitted_energy >= emin) & (emitted_energy <= emax)
+                integrated_intensity = np.trapezoid(intensity[mask], emitted_energy[mask])
+                integral_under_XES.append(integrated_intensity)
+
+            ax.vline(emin, color='red', linestyle='--')
+            ax.vline(emax, color='red', linestyle='--')
+            ax = axs[n, 1]
+            ax.set_title(f"integrated emission for {roi_id}")
+            ax.plot(scan_times, integral_under_XES, color = 'black', marker='o')
+            ax.set_xlabel('Time [s]')
+            ax.set_ylabel('Integrated intensity')
+
+            # Convert to DataFrame
+            df = pd.DataFrame(data)
+            combined_data[roi_id] = df
+
+        path = get_sample_dir(self)/f"{tag}"
+        fig.savefig(path, dpi=300)
+
+        return combined_data
+
+    def plot_time_XES(self, scan_numbers: List[int], scan_times: List[float] ):
+        """Plot the combined XES scans by time."""
 
 
-                all_emitted_energy.append(emitted_energy)
-                all_intensities.append(intensity)
 
-
-
-        for scan in xes_scans:
-
-        pass
-
-
-def export_hd5(sample: 'Sample', filepath: Path) -> None:
+def export_hd5(sample: 'Sample', filepath: Path, xes_series = None) -> None:
     with h5py.File(filepath, "w") as h5file:
         meta_grp = h5file.create_group("metadata")
         meta_grp.create_dataset("name", data=sample.name)
@@ -1060,36 +1091,30 @@ def export_hd5(sample: 'Sample', filepath: Path) -> None:
                     spectrum = np.stack([xes["emitted_energy"], xes["intensity"]], axis=1)
                     xes_grp.create_dataset(f"{roi_id}", data=spectrum)
 
+        if xes_series:
+            for idx, series_dict in enumerate(xes_series):
+                series_grp = h5file.create_group(f"series_{idx}")
+                for roi_id, df in series_dict.items():
+                    roi_grp = series_grp.create_group(roi_id)
+                    roi_grp.create_dataset("spectrum", data=df.to_numpy(dtype=np.float32))
+                    roi_grp.create_dataset("spectrum_labels", data=np.array(df.columns.astype(str), dtype="S"))
+
+
 sample = Sample(
-    electrode_id=1,
-    name="Electrode before cycling",
-    cycle_info="1st cycle")
+    electrode_id=18,
+    name="30VC",
+    cycle_info="6th cycle")
 
 
 
 
-sample.add_scans([7])
 sample.add_scans([8])
-sample.scans[8].plot(save=True)
 
-sample.scans[7].auto_detect_ROI(Plot=False)
-#important: always do energy calibration first, then slice or plot XAS from map
-sample.scans[7].energy_calibration(plot=True)
-sample.add_scans([9])
-sample.scans[9].energy_calibration_from_scan(sample.scans[7])
-sample.scans[9].plot()
-sample.scans[7].slice(save=True)
-sample.scans[7].project_XAS(remove_elastic=True, save=True)
 
-sample.add_scans([12,14])
-sample.scans[12].energy_calibration_from_scan(sample.scans[7])
-sample.scans[12].plot()
-sample.scans[14].energy_calibration_from_scan(sample.scans[7])
-sample.scans[14].plot()
-sample.combine_xes_scans([14,12,9], tag='testE')
-sample.scans[9000].auto_detect_ROI()
-sample.scans[9000].energy_calibration()
-sample.scans[9000].slice(sample.scans[9000].data['energies'], save = True)
+sample.scans[8].auto_detect_ROI(Plot=False)
+sample.scans[8].energy_calibration(plot=True)
+sample.scans[8].slice(save=True)
+sample.scans[8].project_XAS(remove_elastic=True, save=True)
 
 
 plt.show()
