@@ -338,10 +338,10 @@ class RIXSMap(BaseScan):
     calibration_line: Optional[np.ndarray] = None  # Store slope and intercept
     xas_data:  Dict[str, Any] = field(default_factory=dict, init=False)
     xes_data:  Dict[str, Any] = field(default_factory=dict, init=False)
-
+    xes_slices: Dict[str, Any] = field(default_factory=dict, init=False)
 
     def slice(self, absorption_energy: Optional[np.ndarray] = None, save = False):
-        self.xes_slices = {}
+
         """returns the slices of the map at energies specified in absorption_energy list"""
         if absorption_energy is None:
             absorption_energy = [2460,2469.5,2471,2472,2481,2495] #default values
@@ -446,7 +446,7 @@ class RIXSMap(BaseScan):
 
                 pilatus_sum = np.sum(pilatus_image[:, :, roi[0]:roi[1]], axis=2)
 
-                line_ends = ((energy[0], energy[np.argmax(pilatus_sum[:,-1])]), (np.argmax(pilatus_sum[0]), 195))
+                line_ends = ((energy[0], energy[np.argmax(pilatus_sum[:,-1])]), (np.argmax(pilatus_sum[0]), 195)) #the 5 prevents intensity variation when looking at battery sequene
 
 
                 approx_line_ene2pix = np.polyfit(line_ends[0], line_ends[1], 1)
@@ -634,7 +634,7 @@ class RIXSMap(BaseScan):
                 save_pickle(self.calibration_data[roi_id], path)
 
 
-    def optimize_ROI(self, roi_range: tuple=(280,370), width: int=5, step: int = 5, plot = True):
+    def optimize_ROI(self, roi_range: tuple=(85,120), width: int=5, step: int = 5, plot = True):
         "check the region between roi_range in steps to find the optimum FWHM"
 
         fwhms = []
@@ -648,11 +648,13 @@ class RIXSMap(BaseScan):
             logger.info(f"Testing ROI {roi_id}")
 
             original_rois = self.ROIs
-            self.ROIs = [test_roi]
-            self.calibration_data.pop(roi_id, None)  # ensure clean
+            self.ROIs = {}
+            self.ROIs[f"ROI10"] = (offset, offset + width)
+
+            self.calibration_data.pop(f"ROI10", None)  # ensure clean
             self.energy_calibration(plot=False, save=False)
 
-            result = self.calibration_data[roi_id]
+            result = self.calibration_data[f"ROI10"]
             mean_fwhm = result["mean_fwhm"]
             fwhms.append(mean_fwhm)
             centers.append(offset + width / 2)
@@ -870,6 +872,60 @@ class XESScan(BaseScan):
 
         save_plot(self, fig, descriptor=f"{self.filename}_XES")
 
+@dataclass
+class TimeResolvedXES(BaseScan):
+    calibration: Dict[str, Any] = field(default_factory=dict, init=False)  # dictionary of roi and calibration data, e.g. {'roi_1_2': {'line': [slope, intercept], 'mean_fwhm': 0.5, 'gaussians': pd.DataFrame}} = None
+    ROISs: Dict[str, tuple[int, int]] = field(default_factory=dict)  # dictionary of ROIs with their pixel ranges
+    integrated_spectra: Dict[str, Any] = field(default_factory=dict, init=False)
+
+    def calibrate_from_scan(self,reference_scan: RIXSMap):
+        self.calibration = reference_scan.calibration_data
+        self.ROIs = reference_scan.ROIs
+
+    def plot(self,emin=2455, emax=2465, timestep = 1, save = True):
+        images = self.data["images"]
+        time_points = np.arange(0,len(images)*timestep) #replace with actual time points later
+        results = {}
+
+
+        fig, axs = plt.subplots( len(self.ROIs.items()),2, figsize=(16, 10), squeeze=False)
+
+        for n,(roi_id, roi) in enumerate(self.ROIs.items()):
+            left, right = roi
+            calibration = self.calibration[roi_id]["line"]
+            E2 = np.polyval(calibration, np.arange(0, 195))
+
+            mask = (E2 >= emin) & (E2 <= emax)
+            intensity_series = []
+
+            for img in images:
+                spectrum = np.sum(img[:, left:right], axis=1)  # Sum over the ROI
+                intensity = np.trapezoid(spectrum[mask], E2[mask])
+                intensity_series.append(intensity)
+
+
+            ax = axs[n,0]
+            RIXS_map = np.sum(images[:, :, roi[0]:roi[1]], axis=2)
+            ax.axvline(emin, color = 'red', linestyle='--')
+            ax.axvline(emax, color = 'red', linestyle='--')
+            ax.pcolormesh(E2, time_points, RIXS_map, shading='auto')
+            ax.set_title(f'XES {roi_id}')
+            ax.set_xlabel('Energy (eV)')
+            ax.set_ylabel('Time (s)')
+            ax.grid(visible=True, alpha=0.3)
+
+            results[roi_id] = intensity_series
+            ax = axs[n, 1]
+            ax.plot(time_points, intensity_series, label=f'ROI {roi_id}',color = 'black', marker='o')
+            ax.set_title(f'Integrated XES for {roi_id}')
+            ax.set_xlabel('Time (s)')
+            ax.set_ylabel('Intensity')
+            ax.grid(visible=True, alpha=0.3)
+
+        if save:
+            save_plot(self, fig, descriptor=f"{self.filename}_time_XES")
+
+
 
 
 
@@ -885,7 +941,7 @@ class Sample:
     def _generate_filename(self, scan_number: int) -> str:
         return f"Electrode_{self.electrode_id:02d}_{scan_number:04d}.nxs"
 
-    def add_scans(self, scan_numbers: np.ndarray, energy: Optional[np.ndarray]=None) -> None:
+    def add_scans(self, scan_numbers: np.ndarray, energy: Optional[np.ndarray]=None, type: str = None) -> None:
         for scan_number in scan_numbers:
             filename = self._generate_filename(scan_number)
             temp_scan = BaseScan(number=scan_number, filename=filename, electrode_id=self.electrode_id)
@@ -899,7 +955,11 @@ class Sample:
                 scan = XASScan(number=scan_number, filename=filename, electrode_id=self.electrode_id, type=scan_type, _preloaded_data=temp_scan.data
 )
             elif scan_type == 'RIXS map':
-                scan = RIXSMap(number=scan_number, filename=filename, electrode_id=self.electrode_id,type=scan_type,_preloaded_data=temp_scan.data)
+                if type == 'TimeXES':
+                    scan=TimeResolvedXES(number=scan_number, filename=filename, electrode_id=self.electrode_id,type="Time-resolved XES", _preloaded_data=temp_scan.data)
+                else:
+                    scan = RIXSMap(number=scan_number, filename=filename, electrode_id=self.electrode_id,type=scan_type,_preloaded_data=temp_scan.data)
+
             elif scan_type == 'XES Scan':
                 scan = XESScan(number=scan_number, filename=filename, electrode_id=self.electrode_id,type=scan_type,_preloaded_data=temp_scan.data)
             else:
@@ -1016,8 +1076,8 @@ class Sample:
                 integrated_intensity = np.trapezoid(intensity[mask], emitted_energy[mask])
                 integral_under_XES.append(integrated_intensity)
 
-            ax.vline(emin, color='red', linestyle='--')
-            ax.vline(emax, color='red', linestyle='--')
+            ax.axvline(emin, color='red', linestyle='--')
+            ax.axvline(emax, color='red', linestyle='--')
             ax = axs[n, 1]
             ax.set_title(f"integrated emission for {roi_id}")
             ax.plot(scan_times, integral_under_XES, color = 'black', marker='o')
@@ -1033,12 +1093,10 @@ class Sample:
 
         return combined_data
 
-    def plot_time_XES(self, scan_numbers: List[int], scan_times: List[float] ):
-        """Plot the combined XES scans by time."""
 
 
 
-def export_hd5(sample: 'Sample', filepath: Path, xes_series = None) -> None:
+def export_hd5(sample: 'Sample', filepath: Path, xes_series = None, save_raw = False) -> None:
     with h5py.File(filepath, "w") as h5file:
         meta_grp = h5file.create_group("metadata")
         meta_grp.create_dataset("name", data=sample.name)
@@ -1049,7 +1107,28 @@ def export_hd5(sample: 'Sample', filepath: Path, xes_series = None) -> None:
 
         for scan_number, scan in sample.scans.items():
             scan_grp = scans_grp.create_group(f"{scan_number:04d}")
+            if 'images' in scan.data.keys() and save_raw:
+                scan_grp.create_dataset("Raw", data = scan.data['images'])
+                if 'energies' in scan.data.keys():
+                    scan_grp.create_dataset("energies", data=scan.data['energies'])
+            if 'Amptek' in scan.data.keys() and save_raw:
+                raw = scan_grp.create_group("raw")
+                raw.create_dataset("Amptek", data=scan.data['Amptek'])
+                raw.create_dataset("positions", data=scan.data['position'])
+                raw.create_dataset("I01", data=scan.data['I01'])
+                raw.create_dataset("Diode", data=scan.data['DIODE'])
+                raw.create_dataset("SDD", data=scan.data['SDD'])
+
             scan_grp.attrs["type"] = scan.type or "Unknown"
+            start_time = scan.data.get("start_time")
+            end_time = scan.data.get("end_time")
+            exposure_time = scan.data.get("exposure_time")
+            if start_time:
+                scan_grp.attrs["start_time"] = str(start_time)
+            if end_time:
+                scan_grp.attrs["end_time"] = str(end_time)
+            if exposure_time:
+                scan_grp.attrs["exposure_time"] = exposure_time[0] / 1000
 
             # =============== RIXSMap ===============
             if isinstance(scan, RIXSMap):
@@ -1074,10 +1153,17 @@ def export_hd5(sample: 'Sample', filepath: Path, xes_series = None) -> None:
                         if roi_id in scan.xes_slices:
                             xes = scan.xes_slices[roi_id]
                             xes_grp = roi_grp.create_group("XES_slices")
+                            emitted_energy = xes["emitted_energy"]
+                            slice_energies = []
+                            slice_matrix = [emitted_energy]
+
                             for energy_label, slice_data in xes["slices"].items():
-                                energy_value = float(energy_label)
-                                spectrum = np.stack([xes["emitted_energy"], slice_data], axis=1)
-                                xes_grp.create_dataset(f"{energy_label}", data=spectrum)
+                                slice_energies.append(float(energy_label))
+                                slice_matrix.append(slice_data)
+
+                            slice_matrix = np.stack(slice_matrix,axis=1)
+                            xes_grp.create_dataset("XES_slices",data=slice_matrix)
+                            xes_grp.create_dataset("slice_excitation_energies", data=np.array(slice_energies))
 
             # =============== XASScan ===============
             elif isinstance(scan, XASScan):
@@ -1088,56 +1174,50 @@ def export_hd5(sample: 'Sample', filepath: Path, xes_series = None) -> None:
 
             # =============== XESScan ===============
             elif isinstance(scan, XESScan):
-                xes_grp = scan_grp.create_group("XES")
-                for roi_id, roi in scan.ROIs.items():
-                    xes = scan.xes_data[roi_id]
-                    spectrum = np.stack([xes["emitted_energy"], xes["intensity"]], axis=1)
-                    xes_grp.create_dataset(f"{roi_id}", data=spectrum)
+                if scan.ROIs:
+                    xes_grp = scan_grp.create_group("XES")
+                    for roi_id, roi in scan.ROIs.items():
+                        xes = scan.xes_data[roi_id]
+                        spectrum = np.stack([xes["emitted_energy"], xes["intensity"]], axis=1)
+                        xes_grp.create_dataset(f"{roi_id}", data=spectrum)
 
-        if xes_series:
-            for idx, series_dict in enumerate(xes_series):
-                series_grp = h5file.create_group(f"series_{idx}")
-                for roi_id, df in series_dict.items():
-                    roi_grp = series_grp.create_group(roi_id)
-                    roi_grp.create_dataset("spectrum", data=df.to_numpy(dtype=np.float32))
-                    roi_grp.create_dataset("spectrum_labels", data=np.array(df.columns.astype(str), dtype="S"))
+            if xes_series:
+                for idx, series_dict in enumerate(xes_series):
+                    series_grp = h5file.create_group(f"series_{idx}")
+                    for roi_id, df in series_dict.items():
+                        roi_grp = series_grp.create_group(roi_id)
+                        roi_grp.create_dataset("spectrum", data=df.to_numpy(dtype=np.float32))
+                        roi_grp.create_dataset("spectrum_labels", data=np.array(df.columns.astype(str), dtype="S"))
 
 
 
 sample = Sample(
-    electrode_id=1,
-    name="Electrode before cycling",
+    electrode_id=22,
+    name="Battery 1 (2.65mg)",
     cycle_info="1st cycle")
 
+energies = [2469.9, 2471.7, 2473.5, 2478,2481.5,2520]
+counter = 0
+
+for i in range(41,90,7):
+    RIXS_scans = [n for n in range(i,i+6)]
+    for l,scan in enumerate(RIXS_scans):
+        sample.add_scans([scan])
+        sample.scans[scan].energy = [energies[l]]
+
+    sample.combine_xes_scans(RIXS_scans, tag=f'point {counter}')
+    sample.scans[9000 + counter].auto_detect_ROI()
+    sample.scans[9000 + counter].add_roi(88,95)
+    sample.scans[9000 + counter].energy_calibration()
+    sample.scans[9000 + counter].slice(sample.scans[9000 + counter].data['energies'], save=True)
+    for l,scan in enumerate(RIXS_scans):
+        sample.scans[scan].energy_calibration_from_scan(sample.scans[9000 + counter])
+        sample.scans[scan].plot()
+
+    sample.add_scans([i+6])
+    sample.scans[i+6].plot(save=True)
+
+    counter = counter + 1
 
 
-
-sample.add_scans([7])
-sample.add_scans([8])
-sample.scans[8].plot(save=True)
-
-sample.scans[7].auto_detect_ROI(Plot=False)
-#important: always do energy calibration first, then slice or plot XAS from map
-sample.scans[7].energy_calibration(plot=True, save=True)
-sample.add_scans([9])
-sample.scans[9].energy_calibration_from_scan(sample.scans[7])
-sample.scans[9].plot()
-sample.scans[7].slice(save=True)
-sample.scans[7].project_XAS(remove_elastic=True, save=True)
-
-sample.add_scans([12,14])
-sample.scans[12].energy_calibration_from_scan(sample.scans[7])
-sample.scans[12].plot()
-sample.scans[14].energy_calibration_from_scan(sample.scans[7])
-sample.scans[14].plot()
-sample.combine_xes_scans([14,12,9], tag='testE')
-sample.scans[9000].auto_detect_ROI()
-sample.scans[9000].energy_calibration()
-sample.scans[9000].slice(sample.scans[9000].data['energies'], save = True)
-
-plt.show()
-
-
-
-
-
+export_hd5(sample, Path("Sample_0022_test.h5"), save_raw = False)
