@@ -467,7 +467,7 @@ class RIXSMap(BaseScan):
                 for j, (e, data) in enumerate(zip(energy, pilatus_sum)):
 
                     x_max = int(np.polyval(approx_line_ene2pix, e))  # at which pixel are we looking for elastic peak a
-                    if x_max > data.shape[0] - 10:  # stop when we run out of pixels (elastic runs out)
+                    if x_max > data.shape[0] :  # stop when we run out of pixels (elastic runs out) limit this (or no?)
                         continue
                     # presumed peakmaks 5 px left and right from the
                     # mask = [x_max-5:x_max+5]
@@ -501,7 +501,7 @@ class RIXSMap(BaseScan):
                         'bkg_c1': result.params['bkg_c1'].value,
                     })
 
-                    if plot and j % 25 == 0:
+                    if plot and j % 1 == 0:
                         ax = axs[0, 1]
                         ax.plot(x, y, color='black')
                         # ax.plot(x_fit, result.best_fit, color = 'red', label = 'fit')
@@ -1191,33 +1191,35 @@ def export_hd5(sample: 'Sample', filepath: Path, xes_series = None, save_raw = F
 
 
 
+
 sample = Sample(
-    electrode_id=22,
-    name="Battery 1 (2.65mg)",
+    electrode_id=1,
+    name="Electrode before cycling",
     cycle_info="1st cycle")
 
-energies = [2469.9, 2471.7, 2473.5, 2478,2481.5,2520]
-counter = 0
-
-for i in range(41,90,7):
-    RIXS_scans = [n for n in range(i,i+6)]
-    for l,scan in enumerate(RIXS_scans):
-        sample.add_scans([scan])
-        sample.scans[scan].energy = [energies[l]]
-
-    sample.combine_xes_scans(RIXS_scans, tag=f'point {counter}')
-    sample.scans[9000 + counter].auto_detect_ROI()
-    sample.scans[9000 + counter].add_roi(88,95)
-    sample.scans[9000 + counter].energy_calibration()
-    sample.scans[9000 + counter].slice(sample.scans[9000 + counter].data['energies'], save=True)
-    for l,scan in enumerate(RIXS_scans):
-        sample.scans[scan].energy_calibration_from_scan(sample.scans[9000 + counter])
-        sample.scans[scan].plot()
-
-    sample.add_scans([i+6])
-    sample.scans[i+6].plot(save=True)
-
-    counter = counter + 1
 
 
-export_hd5(sample, Path("Sample_0022_test.h5"), save_raw = False)
+
+sample.add_scans([7])
+sample.add_scans([8])
+sample.scans[8].plot(save=True)
+
+sample.scans[7].auto_detect_ROI(Plot=False)
+#important: always do energy calibration first, then slice or plot XAS from map
+sample.scans[7].energy_calibration(plot=True)
+sample.add_scans([9])
+sample.scans[9].energy_calibration_from_scan(sample.scans[7])
+sample.scans[9].plot()
+sample.scans[7].slice(save=True)
+sample.scans[7].project_XAS(remove_elastic=True, save=True)
+
+sample.add_scans([12,14])
+sample.scans[12].energy_calibration_from_scan(sample.scans[7])
+sample.scans[14].energy_calibration_from_scan(sample.scans[7])
+sample.combine_xes_scans([14,12,9], tag='testE')
+sample.scans[9000].auto_detect_ROI()
+sample.scans[9000].energy_calibration()
+sample.scans[9000].slice(sample.scans[9000].data['energies'], save = True)
+
+
+export_hd5(sample, Path("Sample_0001.h5"), save_raw = False)
