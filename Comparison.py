@@ -5,7 +5,7 @@ from importlib.metadata import metadata
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 
-
+from scipy.signal import savgol_filter
 import numpy as np
 import os
 import h5py
@@ -15,6 +15,8 @@ from matplotlib import pyplot as plt
 import matplotlib.gridspec as gridspec
 from lmfit.models import PolynomialModel, GaussianModel, LinearModel, LorentzianModel, VoigtModel
 import pandas as pd
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
 import logging
 import warnings
 __Analysis__ = "Analysis"
@@ -27,16 +29,14 @@ def load_scans (sample_number: int,
                 scans = dict['str', list],
                 roi_id: Optional[int] = " ",
                 kind: str = 'Amptek',
-                energy: Optional[float] = None):
+                smooth: Optional[int] = 1) -> Optional[pd.Series]:
     """ load specified scans from the h5 files that combine all scans of a sample. return df with all the data interpolated onto the same energy axis if needed"""
-
-
 
     path = f"Sample_{sample_number:04d}.h5"
     if not Path(path).exists():
         logger.error(f"Sample {sample_number:04d} does not exist")
-        continue
-
+        return None
+    dfs = []
     with h5py.File(path, 'r') as f:
         sample_name = f["metadata"]["name"][()].decode("utf-8")
 
@@ -54,50 +54,93 @@ def load_scans (sample_number: int,
                     continue
                 data = scan_grp["Amptek_XAS"]["spectrum"][:]
                 df = pd.DataFrame(data, columns=["incident_energy", "intensity"])
+                dfs.append(df)
 
 
-            df["sample"] = sample_name
-            df["scan_number"] = scan_number
-            df["roi_id"] = roi_id
+    energy_ax = dfs[0]["incident_energy"]
+    summed_intensity = np.zeros_like(energy_ax)
 
-    return pd.concat(df, ignore_index = True)
+    for df in dfs:
+        interpolated_intensity = np.interp(energy_ax, df["incident_energy"], df["intensity"])
+        summed_intensity += interpolated_intensity
 
 
-samples = [1, 6, 7]
+    if smooth and smooth > 1:
+        smoothed = pd.Series(summed_intensity).rolling(window=smooth, center=True).mean().to_numpy()
+        if smooth % 2 == 0:
+            smooth += 1
+        order = min (3, smooth - 1)  # Ensure polyorder is less than window_length
+        smoothed = savgol_filter(summed_intensity, window_length=smooth, polyorder=order)#rolling mean for smoothing
+    else:
+        smoothed = summed_intensity
+
+    df = pd.Series(data=smoothed, index=pd.Series(energy_ax, name="energy [eV]"), name=sample_name + ": Sample " + str(sample_number))
+    return df
+
+
+def nomalize_xas(df: pd.Series) -> pd.Series:
+    #first find pre-edge line and subtract from entire spectrum
+    pre_edge = df[df.index < 2465]
+    line = np.polyfit(pre_edge.index, pre_edge.values, 1)
+    baseline = np.polyval(line, df.index)
+    pre_edge_normalized = df - baseline
+
+    #then fit a function to last part of spectra, evaluate it at e0 (max derivative) and normalize wit that
+
+    post_edge = df[df.index > 2475]
+    line = np.polyfit(post_edge.index, post_edge.values, 1)
+    max_der= np.argmax(np.gradient(pre_edge_normalized))
+    e0 = df.index[max_der]
+    norm_factor = np.polyval(line, e0)
+    normalized = pre_edge_normalized / norm_factor
+
+
+
+    norm_df = pd.Series(data=normalized, index=pd.Series(df.index, name="energy [eV]"), name = df.name)
+
+    return  norm_df
+
+
+
+def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Amptek', cmap_name='viridis'):
+    fig, ax = plt.subplots(1, 1, figsize=(16, 10))
+    axin1 = ax.inset_axes([0.05, 0.55, 0.28, 0.35])
+    cmap = cm.get_cmap(cmap_name, len(samples))
+    norm = mcolors.Normalize(vmin=0, vmax=len(samples)-1)
+
+
+
+
+    for i, sample in enumerate(samples):
+        df = load_scans(sample, scans, kind=kind, smooth=6)
+        df = nomalize_xas(df)
+        data = df.to_numpy()
+        if df is None:
+            continue
+
+        color = cmap(norm(i))
+
+        ax.plot(df.index, data, label=df.name, color=color)
+        axin1.plot(df.index, np.gradient(data), color=color)
+
+    ax.set_xlabel("Incident Energy (eV)")
+    ax.set_ylabel("Intensity (counts)")
+    ax.set_title("Amptek XAS Spectra")
+    ax.legend(loc = 'lower right')
+    ax.grid(True, alpha=0.3)
+
+    axin1.set_xlim(2466, 2476)
+    axin1.set_title("Derivatives")
+
+
+
+samples = [1,6,7,2,4,5]
 scans = {'1': [8],
-         '6': [12],
-         '7':[6]}
+        '6': [12],
+        '7': [6,],
+        '2': [6,8],
+        '4': [6,7],
+         '5': [6],}
 
-df = load_scans([1,6,7], scans)
-fig, ax = plt.subplots(1,1, figsize=(16, 7))
-axin1 = ax.inset_axes([0.01, 0.4, 0.3, 0.6])
-
-for sample in samples:
-    df = load_scans(sample, scans)
-    df.plot(ax = ax, x="incident_energy", y="intensity", label=f"Sample {sample} ({sample.items()}", alpha=0.5)
-    data = df["intensity"].to_numpy()
-    axin1.plot(d.index, np.gradient(data), label=d.name,)
-
-for sample_name in scans:
-    group = df[df["sample"] == sample_name]
-    if not group.empty:
-        ax.plot(group["incident_energy"], group["intensity"], label=sample_name)
-
-ax.set_xlabel("Incident Energy (eV)")
-ax.set_ylabel("Intensity (counts)")
-ax.set_title(f"Amptek XAS")
-ax.legend()
-ax.grid(True,alpha=0.3)
-
-axin1 = ax.inset_axes([0.01, 0.4, 0.3, 0.6])
-for index, d in enumerate(dfs):
-    data = d.to_numpy()
-    axin1.plot(d.index, np.gradient(data), label=d.name, color=cmap(index * 5))
-axin1.grid(True, 'major')
-axin1.xaxis.set_major_locator(MultipleLocator(2))
-axin1.xaxis.set_minor_locator(MultipleLocator(1))
-axin1.set_yticklabels([])
-axin1.set_xlim(2466, 2476)
-axin1.set_title("Derivatives")
-
+plot_xas(samples, scans)
 
