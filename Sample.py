@@ -13,6 +13,8 @@ import matplotlib.gridspec as gridspec
 from lmfit.models import PolynomialModel, GaussianModel, LinearModel, LorentzianModel, VoigtModel
 import pandas as pd
 import warnings
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+from scipy.optimize import curve_fit
 
 from cache_utils import get_scan_dir, get_sample_dir
 
@@ -67,6 +69,7 @@ def read_nxs_file(filename):
         'position': '/root_spyc_config1d_RIXS_0001/GALAXIES/scan_record/MotorTrj1',
         'DIODE': '/root_spyc_config1d_RIXS_0001/GALAXIES/scan_record/RIXS_DIODE',
         'I01': '/root_spyc_config1d_RIXS_0001/GALAXIES/scan_record/QBPM_C08_sum',
+        'I02': '/root_spyc_config1d_RIXS_0001/GALAXIES/scan_record/APD2',
         'SDD': '/root_spyc_config1d_RIXS_0001/scan_data/xspchannel00',
         'Amptek': '/root_spyc_config1d_RIXS_0001/scan_data/xspchannel01',
         'exposure_time': '/root_spyc_config1d_RIXS_0001/GALAXIES/i07-c-cx2-dt-pilatus.2/exposure_time',
@@ -93,6 +96,19 @@ def read_nxs_file(filename):
     return out
 
 
+def remove_spikes(series: pd.Series, threshold: float = 5.0):
+    """Remove points that deviate too much from rolling median."""
+    rolling_median = series.rolling(window=5, center=True).median()
+    diff = np.abs(series - rolling_median)
+    mad = diff.rolling(window=5, center=True).median()  # Median Absolute Deviation
+    mask = diff > (threshold * mad)
+
+    cleaned = series.copy()
+    cleaned[mask] = np.nan
+    return cleaned.interpolate(limit_direction='both')
+
+
+
 def save_xas_from_RIXS(scan: 'RIXSMap', roi_id, energy, rw_xas, cleaned_xas):
     df = pd.DataFrame({
         'incident_energy': energy,
@@ -103,10 +119,12 @@ def save_xas_from_RIXS(scan: 'RIXSMap', roi_id, energy, rw_xas, cleaned_xas):
     df.to_csv(path, index=False)
     logger.info(f"Saved XAS from sample {scan.filename} into {path}")
 
-def save_amptek(scan: 'XASScan',roi, energy, intensity):
+def save_amptek(scan: 'XASScan',roi, energy, intensity, intensity_2, I02):
     df = pd.DataFrame({
         'emited_energy': energy,
-        'intensity': intensity})
+        'intensity': intensity,
+        'intensityI02': intensity_2,
+        'I02': I02})
 
 
     path = get_spectrum_path(scan, roi, kind='amptek_xas')
@@ -282,6 +300,9 @@ class XASScan(BaseScan):
 
         position = self.data['position']
         Amptek = self.data['Amptek']
+        I01 = self.data['I01']
+        I02 = self.data['I02']
+        SDD = self.data['SDD']
         roi = [220,240]
         roi_start = roi[0]
         roi_end = roi[1]
@@ -306,25 +327,49 @@ class XASScan(BaseScan):
         ax2.axvline(roi_start, color='red')
         ax2.axvline(roi_end, color='red')
 
+        #describe I02 as a smooth exponential function and valuate it at position
+        #I02_smooth = np.polyval(np.polyfit(position, I02, 4), position)
+        #params, _ = curve_fit(exp_model, position, I02, p0=(1, -0.001, 0))
+        #I02_smooth = exp_model(position, *params)
+        I02_series = pd.Series(I02, index=position)
+        I02_clean = I02_series.rolling(window=5, center=True).median()
+        I02_smooth = I02_clean.rolling(window=50, center=True, min_periods=1).mean()
+        I02_smooth = I02_smooth.bfill().ffill().to_numpy()
+
         # Right tall plot spanning both rows
         ax3 = fig.add_subplot(gs[:, 1])
         Amptek_roi = np.sum(Amptek[:, roi_start:roi_end], axis=1)
-        ax3.plot(position, Amptek_roi, '-', color='black', label = 'Amptek')
+        SDD_roi = np.sum(SDD[:, roi_start:roi_end], axis=1) #divide by I02 to normalize!!!
+        ax3.plot(position, Amptek_roi , '-', color='black', label = 'Amptek')
+        #ax3.plot(position, Amptek_roi/I02 * np.mean(I02), '-', color='red', label='Amptek/I02')
+        normalized = Amptek_roi/I02_smooth * np.mean(I02_smooth)
+        ax3.plot(position,normalized, '-', color='red', label='Amptek/I02_smooth')
+
+        inset_ax = inset_axes(ax3, width="40%", height="40%", loc="lower right")
+        inset_ax.plot(position, I02, '-', color='black', label = 'I02 raw')
+        inset_ax.plot(position, I02_smooth, '-', color='red', label='I02 smoothed')
+        inset_ax.set_title("I02 smoothing", fontsize=8)
+        inset_ax.tick_params(labelsize=6)
+        inset_ax.grid(visible=True, alpha=0.2)
+
         ax3.set_title("Amptek ROI projection")
         ax3.set_xlabel("Incident energy [eV]")
         ax3.set_ylabel("Summed ROI Counts")
         ax3.grid(visible=True, alpha=0.3)
-
+        ax3.legend()
         save_plot(self, fig, descriptor=f"{self.filename}_amptek_XAS")
         if save:
-            save_amptek(self, roi, self.data['position'], Amptek_roi)
+            save_amptek(self, roi, self.data['position'], Amptek_roi, intensity_2=normalized, I02=I02_smooth)
 
 
-        plt.tight_layout()
+        #plt.tight_layout()
 
         self.xas_data = {
             "incident_energy": self.data["position"],
-            "intensity": Amptek_roi
+            "intensity": Amptek_roi,
+            'intensity/I02': normalized,
+            'I01': I01,
+            'I02': I02,
         }
 
     def normalize_spectrum(self):
@@ -1169,7 +1214,7 @@ def export_hd5(sample: 'Sample', filepath: Path, xes_series = None, save_raw = F
             elif isinstance(scan, XASScan):
                 xas = scan.xas_data
                 xas_grp = scan_grp.create_group("Amptek_XAS")
-                spectrum = np.stack([xas["incident_energy"], xas["intensity"]], axis=1)
+                spectrum = np.stack([xas["incident_energy"], xas["intensity"], xas["intensity/I02"], xas['I01'], xas['I02']], axis=1)
                 xas_grp.create_dataset("spectrum", data=spectrum)
 
             # =============== XESScan ===============
@@ -1192,36 +1237,39 @@ def export_hd5(sample: 'Sample', filepath: Path, xes_series = None, save_raw = F
 
 
 
+#Sample1:
+
+
+#Sample1:
+
+
 sample = Sample(
-    electrode_id=1,
-    name="Electrode before cycling",
+    electrode_id=23,
+    name="Battery 3 (2.7mg)",
     cycle_info="1st cycle")
 
+energies = [2471.1,2473.4, 2482.5, 2520]
+counter = 0
+
+for i in range(10,135,5):
+    RIXS_scans = [n for n in range(i,i+4)]
+    for l,scan in enumerate(RIXS_scans):
+        sample.add_scans([scan])
+        sample.scans[scan].energy = [energies[l]]
+
+    sample.combine_xes_scans(RIXS_scans, tag=f'point {counter}')
+    sample.scans[9000 + counter].auto_detect_ROI()
+    sample.scans[9000 + counter].add_roi(88,95)
+    sample.scans[9000 + counter].energy_calibration()
+    sample.scans[9000 + counter].slice(sample.scans[9000 + counter].data['energies'], save=True)
+    for l,scan in enumerate(RIXS_scans):
+        sample.scans[scan].energy_calibration_from_scan(sample.scans[9000 + counter])
+        sample.scans[scan].plot()
+
+    sample.add_scans([i+4])
+    sample.scans[i+4].plot(save=True)
+
+    counter = counter + 1
 
 
-
-sample.add_scans([7])
-sample.add_scans([8])
-sample.scans[8].plot(save=True)
-
-sample.scans[7].auto_detect_ROI(Plot=False)
-#important: always do energy calibration first, then slice or plot XAS from map
-sample.scans[7].energy_calibration(plot=True)
-sample.add_scans([9])
-sample.scans[9].energy_calibration_from_scan(sample.scans[7])
-sample.scans[9].plot()
-sample.scans[7].slice(save=True)
-sample.scans[7].project_XAS(remove_elastic=True, save=True)
-
-sample.add_scans([12,14])
-sample.scans[12].energy_calibration_from_scan(sample.scans[7])
-sample.scans[12].plot()
-sample.scans[14].energy_calibration_from_scan(sample.scans[7])
-sample.scans[14].plot()
-sample.combine_xes_scans([14,12,9], tag='testE')
-sample.scans[9000].auto_detect_ROI()
-sample.scans[9000].energy_calibration()
-sample.scans[9000].slice(sample.scans[9000].data['energies'], save = True)
-
-
-export_hd5(sample, Path("Sample_0001.h5"), save_raw = False)
+export_hd5(sample, Path("Sample_0023.h5"))

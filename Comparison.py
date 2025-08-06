@@ -53,15 +53,15 @@ def load_scans (sample_number: int,
                     logger.error(f"Amptek_XAS not found in scan {scan_number:04d} of sample {sample_number:04d}")
                     continue
                 data = scan_grp["Amptek_XAS"]["spectrum"][:]
-                df = pd.DataFrame(data, columns=["incident_energy", "intensity"])
+                df = pd.DataFrame(data, columns=["incident_energy", "intensity","intensity_2", "I01", "I02"]),
                 dfs.append(df)
 
 
-    energy_ax = dfs[0]["incident_energy"]
+    energy_ax = dfs[0][0]["incident_energy"]
     summed_intensity = np.zeros_like(energy_ax)
 
     for df in dfs:
-        interpolated_intensity = np.interp(energy_ax, df["incident_energy"], df["intensity"])
+        interpolated_intensity = np.interp(energy_ax, df[0]["incident_energy"], df[0]["intensity"])
         summed_intensity += interpolated_intensity
 
 
@@ -74,54 +74,85 @@ def load_scans (sample_number: int,
     else:
         smoothed = summed_intensity
 
-    df = pd.Series(data=smoothed, index=pd.Series(energy_ax, name="energy [eV]"), name=sample_name + ": Sample " + str(sample_number))
+    df = pd.Series(data=smoothed, index=pd.Series(energy_ax, name="energy [eV]"), name=sample_name + ": Sample " + str(sample_number) + f"({scan_number})")
     return df
 
 
-def nomalize_xas(df: pd.Series) -> pd.Series:
+def nomalize_xas(df: pd.Series, flat = False, plot = True) -> pd.Series:
     #first find pre-edge line and subtract from entire spectrum
+    if plot:
+        fig,ax = plt.subplots(1, 1, figsize=(16, 10))
+        ax.plot(df.index,df.values, color = 'black', label = "data")
+
+
     pre_edge = df[df.index < 2465]
-    line = np.polyfit(pre_edge.index, pre_edge.values, 1)
-    baseline = np.polyval(line, df.index)
-    pre_edge_normalized = df - baseline
+    pre_line = np.polyfit(pre_edge.index, pre_edge.values, 1)
+    pre_baseline = np.polyval(pre_line, df.index)
+    pre_edge_normalized = df - pre_baseline
+    if plot:
+        ax.plot(df.index,pre_baseline, color = 'red', ls = '--', label = "pre-edge")
 
     #then fit a function to last part of spectra, evaluate it at e0 (max derivative) and normalize wit that
 
-    post_edge = df[df.index > 2475]
-    line = np.polyfit(post_edge.index, post_edge.values, 1)
+    post_edge = df[df.index > 2481]
+    post_line = np.polyfit(post_edge.index, post_edge.values, 0)
+    post_baseline = np.polyval(post_line, df.index)
     max_der= np.argmax(np.gradient(pre_edge_normalized))
     e0 = df.index[max_der]
-    norm_factor = np.polyval(line, e0)
-    normalized = pre_edge_normalized / norm_factor
+    edge_step = np.polyval(post_line, e0) - np.polyval(pre_line, e0)
+    normalized = pre_edge_normalized/edge_step
+
+    norm_df = pd.Series(data=normalized, index=pd.Series(df.index, name="energy [eV]"), name=df.name)
+    if plot:
+        ax.plot(df.index,post_baseline, color = 'red', ls = '--', label = "post-edge")
+        ax.axvline(e0, color='green', ls=':', label='E0')
+
+    #flatten by fitting a quadratic function to the end and subtract that from the espectrum above e0
+
+    if flat:
+        post_edge = norm_df[normalized.index > 2488] #maybe set both limits, idk why it doesn't normalize properly
+        quadratic = np.polyfit(post_edge.index, post_edge.values, 2)
+        baseline = np.polyval(quadratic, norm_df.index)
 
 
+        flat = (norm_df - baseline) + baseline[max_der]
+        flat.iloc[:max_der] = normalized.iloc[:max_der]
 
-    norm_df = pd.Series(data=normalized, index=pd.Series(df.index, name="energy [eV]"), name = df.name)
 
-    return  norm_df
+        if plot:
+            ax.plot(df.index, (baseline*edge_step) , color='blue', ls='--', label="quad")
 
+        return  flat
+
+    else:
+        return norm_df
 
 
 def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Amptek', cmap_name='viridis'):
+    cmap_name = 'jet'
     fig, ax = plt.subplots(1, 1, figsize=(16, 10))
     axin1 = ax.inset_axes([0.05, 0.55, 0.28, 0.35])
-    cmap = cm.get_cmap(cmap_name, len(samples))
-    norm = mcolors.Normalize(vmin=0, vmax=len(samples)-1)
-
 
 
 
     for i, sample in enumerate(samples):
-        df = load_scans(sample, scans, kind=kind, smooth=6)
-        df = nomalize_xas(df)
-        data = df.to_numpy()
-        if df is None:
-            continue
+        temp_dict = {}
+        cmap = cm.get_cmap(cmap_name, len(scans[str(sample)]))
+        norm = mcolors.Normalize(vmin=0, vmax=len(scans[str(sample)]) - 1)
 
-        color = cmap(norm(i))
+        for j, scan in enumerate(scans[str(sample)]):
+            temp_dict[str(sample)] = [scan]
+            df = load_scans(sample, temp_dict, kind=kind, smooth=1)
+            df = nomalize_xas(df, plot=True, flat = True)
+            data = df.to_numpy()
+            if df is None:
+                continue
 
-        ax.plot(df.index, data, label=df.name, color=color)
-        axin1.plot(df.index, np.gradient(data), color=color)
+            color = cmap(norm(j))
+
+
+            ax.plot(df.index, data, label=df.name, color=color)
+            axin1.plot(df.index, np.gradient(data), color=color)
 
     ax.set_xlabel("Incident Energy (eV)")
     ax.set_ylabel("Intensity (counts)")
@@ -134,13 +165,13 @@ def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Ampte
 
 
 
-samples = [1,6,7,2,4,5]
-scans = {'1': [8],
-        '6': [12],
-        '7': [6,],
-        '2': [6,8],
-        '4': [6,7],
-         '5': [6],}
+
+
+
+
+
+
+samples = [23]
+scans = {'23': np.arange(14,20,5)}
 
 plot_xas(samples, scans)
-
