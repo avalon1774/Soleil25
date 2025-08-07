@@ -78,7 +78,7 @@ def load_scans (sample_number: int,
     return df
 
 
-def nomalize_xas(df: pd.Series, flat = False, plot = True) -> pd.Series:
+def nomalize_xas(df: pd.Series, flat = False, plot = False) -> pd.Series:
     #first find pre-edge line and subtract from entire spectrum
     if plot:
         fig,ax = plt.subplots(1, 1, figsize=(16, 10))
@@ -95,7 +95,7 @@ def nomalize_xas(df: pd.Series, flat = False, plot = True) -> pd.Series:
     #then fit a function to last part of spectra, evaluate it at e0 (max derivative) and normalize wit that
 
     post_edge = df[df.index > 2481]
-    post_line = np.polyfit(post_edge.index, post_edge.values, 0)
+    post_line = np.polyfit(post_edge.index, post_edge.values, 1)
     post_baseline = np.polyval(post_line, df.index)
     max_der= np.argmax(np.gradient(pre_edge_normalized))
     e0 = df.index[max_der]
@@ -108,9 +108,10 @@ def nomalize_xas(df: pd.Series, flat = False, plot = True) -> pd.Series:
         ax.axvline(e0, color='green', ls=':', label='E0')
 
     #flatten by fitting a quadratic function to the end and subtract that from the espectrum above e0
+    flat = False
 
     if flat:
-        post_edge = norm_df[normalized.index > 2488] #maybe set both limits, idk why it doesn't normalize properly
+        post_edge = norm_df[normalized.index > 2481] #maybe set both limits, idk why it doesn't normalize properly
         quadratic = np.polyfit(post_edge.index, post_edge.values, 2)
         baseline = np.polyval(quadratic, norm_df.index)
 
@@ -129,7 +130,7 @@ def nomalize_xas(df: pd.Series, flat = False, plot = True) -> pd.Series:
 
 
 def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Amptek', cmap_name='viridis'):
-    cmap_name = 'jet'
+    cmap_name = 'plasma'
     fig, ax = plt.subplots(1, 1, figsize=(16, 10))
     axin1 = ax.inset_axes([0.05, 0.55, 0.28, 0.35])
 
@@ -143,7 +144,7 @@ def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Ampte
         for j, scan in enumerate(scans[str(sample)]):
             temp_dict[str(sample)] = [scan]
             df = load_scans(sample, temp_dict, kind=kind, smooth=1)
-            df = nomalize_xas(df, plot=True, flat = True)
+            df = nomalize_xas(df, plot=False, flat = True)
             data = df.to_numpy()
             if df is None:
                 continue
@@ -164,7 +165,44 @@ def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Ampte
     axin1.set_title("Derivatives")
 
 
+def plot_xas_2D(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Amptek', cmap_name='viridis'):
+    cmap_name = 'plasma'
+    fig, ax = plt.subplots(1, 1, figsize=(7, 5))
+    #axin1 = ax.inset_axes([0.05, 0.55, 0.28, 0.35])
 
+    all_xas = []
+
+
+    for i, sample in enumerate(samples):
+        temp_dict = {}
+        cmap = cm.get_cmap(cmap_name, len(scans[str(sample)]))
+        norm = mcolors.Normalize(vmin=0, vmax=len(scans[str(sample)]) - 1)
+        time = []
+        for j, scan in enumerate(scans[str(sample)]):
+            temp_dict[str(sample)] = [scan]
+            df = load_scans(sample, temp_dict, kind=kind, smooth=1)
+            df = nomalize_xas(df, plot=False, flat = True)
+            time.append(j*0.75)
+            data = df.to_numpy()
+            if df is None:
+                continue
+
+            color = cmap(norm(j))
+
+            all_xas.append(np.gradient(data))
+
+            #ax.plot(df.index, data, label=df.name, color=color)
+            #axin1.plot(df.index, np.gradient(data), color=color)
+        im = ax.pcolormesh(df.index, time, all_xas, cmap = 'plasma',shading='nearest')
+        fig.colorbar(im, ax=ax)
+        ax.set_xlabel("Incident Energy (eV)")
+        ax.set_ylabel("Time (h)") #not exact
+        #ax.set_title("Amptek XAS Spectra")
+        ax.legend(loc = 'lower right')
+        ax.grid(True, alpha=0.3)
+
+        ax.set_xlim(2465, 2476)
+        ax.set_title("Derivatives")
 
 
 
@@ -172,6 +210,6 @@ def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Ampte
 
 
 samples = [23]
-scans = {'23': np.arange(14,20,5)}
+scans = {'23': np.arange(14,80,5)}
 
-plot_xas(samples, scans)
+plot_xas(samples, scans, )
