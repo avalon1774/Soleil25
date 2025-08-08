@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from importlib.metadata import metadata
 from pathlib import Path
+from tkinter.ttk import Label
 from typing import List, Dict, Optional, Any
 
 from scipy.signal import savgol_filter
@@ -19,6 +20,8 @@ import matplotlib.colors as mcolors
 import logging
 import warnings
 __Analysis__ = "Analysis"
+
+from scipy.stats import alpha
 
 logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__Analysis__)
@@ -55,6 +58,7 @@ def load_scans(sample: int,
                     continue
 
                 roi_names = list(scan_grp["ROIs"])
+                roi_names = ["ROI2"]
                 for roi in roi_names:
                     excitation_energies = scan_grp["ROIs"][roi]["XES_slices"]["slice_excitation_energies"][:]
                     data = scan_grp["ROIs"][roi]["XES_slices"]["XES_slices"][:]
@@ -64,7 +68,8 @@ def load_scans(sample: int,
                     dfs.append(df)
 
                     df = pd.DataFrame(data=data[:, 1:], index=pd.Series(data[:,0], name="energy [eV]"),columns=excitation_energies)
-                    df.attrs["name"] = sample_name + ": Sample " + str(sample) + f"({scan_number})"
+                    #df.attrs["name"] = sample_name + ": Sample " + str(sample) + f"({scan_number})"
+                    df.attrs["name"] = sample_name
     return df
 
 
@@ -121,35 +126,121 @@ def remove_background(x,y,energy=None):
     result = model.fit(y_fit, params, x=x_fit)
 
 
+    elastic_mask = (x > energy - 2) & (x < energy + 2)
 
     line = result.eval_components(x=x)['l_']
     gauss = result.eval_components(x=x)['g_']
 
     y_corrected = y - line
+    #y_masked = y_corrected.copy()
+    #y_masked[elastic_mask] = gauss[elastic_mask]
+
     return x, y_corrected
 
 
 
-def normalize_intensity(x,y,):
-    mask = (x > 2455) & (x < 2468)
+def normalize_intensity(x,y,limits=(2455, 2468)):
+    low_limit = limits[0]
+    upper_limit = limits[1]
+    mask = (x > low_limit) & (x < upper_limit)
     x_fit = x[mask]
     y_fit = y[mask]
     area = np.trapezoid(y_fit, x=x_fit)
-    return x,y /area
+    max_height = np.max(y_fit)
+    return x,y/area
 
 
+def scale_to_elastic(x, y, energy):
+    if energy < max(x):
+        mask = (x> energy - 2) & (x < energy + 2)
+        x_mask = x[mask]
+        y_mask = y[mask]
+        area = np.trapezoid(y_mask, x=x_mask)
+        return x, y/area
+
+    else:
+        return x,y
+
+def smooth_data(x, y, window_length=3, polyorder=2):
+    """Smooth the data using a Savitzky-Golay filter."""
+    if len(y) < window_length:
+        logger.warning("Data length is shorter than window length. Skipping smoothing.")
+        return x, y
+    y_smooth = savgol_filter(y, window_length=window_length, polyorder=polyorder)
+    return x, y_smooth
 
 
-for col_index, group in energy_groups.items():
-    fig, ax = plt.subplots(1, 1, figsize=(16, 10))
-    for x, y, label in group:
-        x,y = remove_background(x, y)
-        x, y = normalize_intensity(x, y)
-        ax.plot(x, y, label=label)
-    ax.set_title(f"Energy Group {col_index}")
-    ax.set_xlabel("Energy [eV]")
+fig, axs = plt.subplots(len(energy_groups.items()), 2, figsize=(7, 15), sharex='col')
+
+limits = [(2465,2470),(2457,2467),(2457, 2469),(2457, 2470),(2457,2472),(2457, 2475)]
+y_limits = [23, 0.65, 0.5, 0.5, 0.5,0.5]
+
+
+custom_labels = []
+
+for i, (col_index, group) in enumerate(energy_groups.items()):
+    cmap = cm.get_cmap('managua', len(group))
+    ax = axs[i,0]
+    ax2 = axs[i,1]
+
+    ref_x = None
+    ref_y = None
+    diff = []
+    labels = []
+
+
+    for ind,(x, y, label) in enumerate(group):
+        x,y = remove_background(x, y, energy = col_index)
+        norm_lower_limit = limits[i][0]
+        norm_upper_limit = limits[i][1]
+        x, y = normalize_intensity(x, y, limits=(norm_lower_limit, norm_upper_limit)) #limit should be vared for each energy group
+        #x,y = scale_to_elastic(x, y, energy=col_index)
+        color = cmap(ind)
+
+
+        x,y = smooth_data(x, y)
+        if ind == 0:
+            ref_x = x.copy()
+            ref_y = y.copy()
+
+        ax.plot(x, y+(0.05*ind), label=label, color = color, linewidth=1)
+
+        if ind == 0:
+            diff.append(0.0)
+        else:
+            y_shifted = np.interp(ref_x,x,y) #if axis by any chance don't match
+            mask = (ref_x > norm_lower_limit) & (ref_x < norm_upper_limit)
+            area = np.trapezoid(np.abs(y_shifted[mask]-ref_y[mask]), x = ref_x[mask])
+            diff.append(area)
+
+        ax2.plot(ind, diff[-1], marker='o',color=color)
+        labels.append(label)
+
+
+    ax.axvline(norm_lower_limit, color='red', ls=':', alpha = 0.7, linewidth = 1)
+    ax.axvline(norm_upper_limit, color='red', ls=':', alpha = 0.7, linewidth = 1)
+    ax.set_yticklabels([])
+    ax.set_xlim(2450,2480)
+    ax.set_ylim(-0.05,y_limits[i])
+    ax.text(0.02, 0.95, f"{col_index} eV",
+            transform=ax.transAxes,
+            fontsize=8,
+            va="top", ha="left")
+
+
     ax.set_ylabel("Intensity")
     ax.grid(True, alpha=0.3)
-    ax.legend()
-    plt.show()
+
+    ax2. set_ylabel("IAD")
+    ax2.grid(True,alpha=0.3)
+
+
+labels[0] = 'S8'
+ax.set_xlabel("Energy [eV]")
+ax2.set_xlabel("Sample")
+ax2.set_xticks(range(len(labels)))
+ax2.set_xticklabels(labels)
+#ax.legend()
+plt.tight_layout()
+plt.show()
 
