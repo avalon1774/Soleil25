@@ -130,7 +130,7 @@ def nomalize_xas(df: pd.Series, flat = False, plot = False) -> pd.Series:
 
 
 def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Amptek', cmap_name='viridis'):
-    cmap_name = 'plasma'
+    cmap_name = 'managua'
     fig, ax = plt.subplots(1, 1, figsize=(16, 10))
     axin1 = ax.inset_axes([0.05, 0.55, 0.28, 0.35])
 
@@ -166,7 +166,7 @@ def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Ampte
 
 
 def plot_xas_2D(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Amptek', cmap_name='viridis'):
-    cmap_name = 'plasma'
+    cmap_name = 'managua'
     fig, ax = plt.subplots(1, 1, figsize=(7, 5))
     #axin1 = ax.inset_axes([0.05, 0.55, 0.28, 0.35])
 

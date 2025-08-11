@@ -81,12 +81,17 @@ samples = {'1': [7],
            '5': [4], }
 
 
+samples = {'23' : np.arange(9000,9020).tolist(),}
+
+
 energy_groups = {}
 
-for sample in list(samples.keys()):
+#for sample in list(samples.keys()):
 
-    df = load_scans(sample,samples[sample])
+for scan in samples['23']:
 
+    #df = load_scans(sample,samples[sample])
+    df = load_scans('23', [scan])
     plot_sample = False
     if plot_sample:
         fig, ax = plt.subplots(1, 1, figsize=(16, 10))
@@ -110,9 +115,11 @@ for sample in list(samples.keys()):
 
 
 
-def remove_background(x,y,energy=None):
+def remove_background(x,y,energy=None, plot = False):
     "fit a combination of linear background and a gaussian to the data and subtract the linear function from the data"
-    mask = ((x > 2445) & (x < 2455)) | ((x > 2475) & (x < 2480))
+    mask = ((x > 2445) & (x < 2450)) | ((x > 2470) & (x < 2480)) #roi2
+    #mask = ((x > 2435) & (x < 2450)) | ((x > 2470) & (x < 2480)) #roi1
+
     x_fit = x[mask]
     y_fit = y[mask]
     gaussian_model = GaussianModel(prefix='g_')
@@ -134,6 +141,14 @@ def remove_background(x,y,energy=None):
     y_corrected = y - line
     #y_masked = y_corrected.copy()
     #y_masked[elastic_mask] = gauss[elastic_mask]
+
+    if plot:
+        fig, ax = plt.subplots(1, 1, figsize=(16, 10))
+        ax.plot(x,y, color = 'black', label='Original Data')
+        ax.plot(x, line, color='red', label='Linear Background')
+        ax.plot(x, gauss, color='blue', label='Gaussian Fit')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
 
     return x, y_corrected
 
@@ -161,7 +176,7 @@ def scale_to_elastic(x, y, energy):
     else:
         return x,y
 
-def smooth_data(x, y, window_length=3, polyorder=2):
+def smooth_data(x, y, window_length=5, polyorder=2):
     """Smooth the data using a Savitzky-Golay filter."""
     if len(y) < window_length:
         logger.warning("Data length is shorter than window length. Skipping smoothing.")
@@ -170,11 +185,13 @@ def smooth_data(x, y, window_length=3, polyorder=2):
     return x, y_smooth
 
 
-fig, axs = plt.subplots(len(energy_groups.items()), 2, figsize=(7, 15), sharex='col')
+fig, axs = plt.subplots(len(energy_groups.items()), 2, figsize=(8, 10), sharex='col')
 
-limits = [(2465,2470),(2457,2467),(2457, 2469),(2457, 2470),(2457,2472),(2457, 2475)]
+limits = [(2465,2470),(2457,2467),(2457, 2469),(2457, 2469.3),(2457,2472),(2457, 2475)] #ex situ
 y_limits = [23, 0.65, 0.5, 0.5, 0.5,0.5]
 
+limits = [(2460,2468),(2457,2470.5),(2457, 2475),(2457, 2475),]
+y_limits = [1, 1, 1.2, 1, 2,2]#battery
 
 custom_labels = []
 
@@ -190,7 +207,8 @@ for i, (col_index, group) in enumerate(energy_groups.items()):
 
 
     for ind,(x, y, label) in enumerate(group):
-        x,y = remove_background(x, y, energy = col_index)
+        x, y = smooth_data(x, y, window_length=10)
+        x,y = remove_background(x, y, energy = col_index, plot = False)
         norm_lower_limit = limits[i][0]
         norm_upper_limit = limits[i][1]
         x, y = normalize_intensity(x, y, limits=(norm_lower_limit, norm_upper_limit)) #limit should be vared for each energy group
@@ -198,7 +216,7 @@ for i, (col_index, group) in enumerate(energy_groups.items()):
         color = cmap(ind)
 
 
-        x,y = smooth_data(x, y)
+
         if ind == 0:
             ref_x = x.copy()
             ref_y = y.copy()
@@ -213,14 +231,16 @@ for i, (col_index, group) in enumerate(energy_groups.items()):
             area = np.trapezoid(np.abs(y_shifted[mask]-ref_y[mask]), x = ref_x[mask])
             diff.append(area)
 
-        ax2.plot(ind, diff[-1], marker='o',color=color)
+        ax2.plot(ind*0.75, diff[-1], marker='o',color=color)
+        #ax2.plot(ind, diff[-1], marker='o', color=color)
+
         labels.append(label)
 
 
     ax.axvline(norm_lower_limit, color='red', ls=':', alpha = 0.7, linewidth = 1)
     ax.axvline(norm_upper_limit, color='red', ls=':', alpha = 0.7, linewidth = 1)
     ax.set_yticklabels([])
-    ax.set_xlim(2450,2480)
+    ax.set_xlim(2450,2476)
     ax.set_ylim(-0.05,y_limits[i])
     ax.text(0.02, 0.95, f"{col_index} eV",
             transform=ax.transAxes,
@@ -235,12 +255,16 @@ for i, (col_index, group) in enumerate(energy_groups.items()):
     ax2.grid(True,alpha=0.3)
 
 
-labels[0] = 'S8'
+#labels[0] = 'S8'
 ax.set_xlabel("Energy [eV]")
 ax2.set_xlabel("Sample")
-ax2.set_xticks(range(len(labels)))
-ax2.set_xticklabels(labels)
-#ax.legend()
+ax2.set_xlabel("Time (h)")
+#ax2.set_xticks(range(len(labels)))
+#ax2.set_xticklabels(labels)
+fig.suptitle('Battery 3 (2.7 mg S): ROI 2')
 plt.tight_layout()
+fig.savefig('(extrapolate 10) Battery 3: ROI 2', dpi=300)
+#ax.legend()
+
 plt.show()
 
