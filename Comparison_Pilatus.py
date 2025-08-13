@@ -29,7 +29,7 @@ logger = logging.getLogger(__Analysis__)
 
 def load_scans(sample: int,
                 scans: list,
-                roi_id: Optional[int] = " ",
+                roi_id: Optional[int] = "ROI1",
                 kind: str = 'XES_combined',
                 smooth: Optional[int] = 1) -> Optional[pd.Series]:
     """ load specified scans from the h5 files that combine all scans of a sample. return df with all the data interpolated onto the same energy axis if needed"""
@@ -58,7 +58,7 @@ def load_scans(sample: int,
                     continue
 
                 roi_names = list(scan_grp["ROIs"])
-                roi_names = ["ROI2"]
+                roi_names = [roi_id]
                 for roi in roi_names:
                     excitation_energies = scan_grp["ROIs"][roi]["XES_slices"]["slice_excitation_energies"][:]
                     data = scan_grp["ROIs"][roi]["XES_slices"]["XES_slices"][:]
@@ -78,20 +78,21 @@ samples = {'1': [7],
            '7': [4],
            '2': [7],
            '4': [8],
-           '5': [4], }
+           '5': [4],}
 
 
-samples = {'23' : np.arange(9000,9020).tolist(),}
+#samples = {'23' : np.arange(9000,9020).tolist(),}
 
 
 energy_groups = {}
 
-#for sample in list(samples.keys()):
+for sample in list(samples.keys()):
 
-for scan in samples['23']:
+#for scan in samples['23']:
+#    df = load_scans('23', [scan])
 
-    #df = load_scans(sample,samples[sample])
-    df = load_scans('23', [scan])
+    df = load_scans(sample,samples[sample])
+
     plot_sample = False
     if plot_sample:
         fig, ax = plt.subplots(1, 1, figsize=(16, 10))
@@ -187,11 +188,12 @@ def smooth_data(x, y, window_length=5, polyorder=2):
 
 fig, axs = plt.subplots(len(energy_groups.items()), 2, figsize=(8, 10), sharex='col')
 
-limits = [(2465,2470),(2457,2467),(2457, 2469),(2457, 2469.3),(2457,2472),(2457, 2475)] #ex situ
+limits = [(2465,2470),(2457,2467),(2457, 2469),(2457, 2469.3),(2457,2472),(2457, 2475)] #ex situ 6
+limits = [(2454,2469),(2457,2471),(2457, 2472),(2457, 2474),(2457,2472),(2457, 2475)]
 y_limits = [23, 0.65, 0.5, 0.5, 0.5,0.5]
 
-limits = [(2460,2468),(2457,2470.5),(2457, 2475),(2457, 2475),]
-y_limits = [1, 1, 1.2, 1, 2,2]#battery
+#limits = [(2460,2468),(2457,2470.5),(2457, 2475),(2457, 2475),]
+#y_limits = [1, 1, 1.2, 1, 2,2]#battery
 
 custom_labels = []
 
@@ -207,7 +209,7 @@ for i, (col_index, group) in enumerate(energy_groups.items()):
 
 
     for ind,(x, y, label) in enumerate(group):
-        x, y = smooth_data(x, y, window_length=10)
+        x, y = smooth_data(x, y, window_length=5)
         x,y = remove_background(x, y, energy = col_index, plot = False)
         norm_lower_limit = limits[i][0]
         norm_upper_limit = limits[i][1]
@@ -231,8 +233,8 @@ for i, (col_index, group) in enumerate(energy_groups.items()):
             area = np.trapezoid(np.abs(y_shifted[mask]-ref_y[mask]), x = ref_x[mask])
             diff.append(area)
 
-        ax2.plot(ind*0.75, diff[-1], marker='o',color=color)
-        #ax2.plot(ind, diff[-1], marker='o', color=color)
+        #ax2.plot(ind*0.75, diff[-1], marker='o',color=color)
+        ax2.plot(ind, diff[-1], marker='o', color=color)
 
         labels.append(label)
 
@@ -258,13 +260,18 @@ for i, (col_index, group) in enumerate(energy_groups.items()):
 #labels[0] = 'S8'
 ax.set_xlabel("Energy [eV]")
 ax2.set_xlabel("Sample")
-ax2.set_xlabel("Time (h)")
-#ax2.set_xticks(range(len(labels)))
-#ax2.set_xticklabels(labels)
-fig.suptitle('Battery 3 (2.7 mg S): ROI 2')
+ax2.set_xlabel("Sample")
+ax2.set_xticks(range(len(labels)))
+ax2.set_xticklabels(labels)
+fig.suptitle('1st cycle: ROI 2')
 plt.tight_layout()
-fig.savefig('(extrapolate 10) Battery 3: ROI 2', dpi=300)
+#.savefig('(extrapolate 10) Battery 3: ROI 2', dpi=300)
 #ax.legend()
 
 plt.show()
+
+
+
+
+#load references
 

@@ -389,7 +389,8 @@ class RIXSMap(BaseScan):
 
         """returns the slices of the map at energies specified in absorption_energy list"""
         if absorption_energy is None:
-            absorption_energy = [2460,2469.5,2471,2472,2481,2495] #default values
+            absorption_energy = [2471.1,2473.4, 2482.5, 2520] #values for bat 4
+            #absorption_energy = [2460,2469.5,2471,2472,2481,2495] #default values
 
         pilatus_image = self.data['images']
         energy = self.data['energies']
@@ -1240,36 +1241,226 @@ def export_hd5(sample: 'Sample', filepath: Path, xes_series = None, save_raw = F
 #Sample1:
 
 
-#Sample1:
-
-
 sample = Sample(
-    electrode_id=23,
-    name="Battery 3 (2.7mg)",
+    electrode_id=1,
+    name="Electrode before cycling",
     cycle_info="1st cycle")
 
-energies = [2471.1,2473.4, 2482.5, 2520]
-counter = 0
-
-for i in range(10,135,5):
-    RIXS_scans = [n for n in range(i,i+4)]
-    for l,scan in enumerate(RIXS_scans):
-        sample.add_scans([scan])
-        sample.scans[scan].energy = [energies[l]]
-
-    sample.combine_xes_scans(RIXS_scans, tag=f'point {counter}')
-    sample.scans[9000 + counter].auto_detect_ROI()
-    sample.scans[9000 + counter].add_roi(88,95)
-    sample.scans[9000 + counter].energy_calibration()
-    sample.scans[9000 + counter].slice(sample.scans[9000 + counter].data['energies'], save=True)
-    for l,scan in enumerate(RIXS_scans):
-        sample.scans[scan].energy_calibration_from_scan(sample.scans[9000 + counter])
-        sample.scans[scan].plot()
-
-    sample.add_scans([i+4])
-    sample.scans[i+4].plot(save=True)
-
-    counter = counter + 1
 
 
-export_hd5(sample, Path("Sample_0023.h5"))
+
+sample.add_scans([7])
+sample.add_scans([8])
+sample.scans[8].plot(save=True)
+
+sample.scans[7].auto_detect_ROI(Plot=False)
+#important: always do energy calibration first, then slice or plot XAS from map
+sample.scans[7].energy_calibration(plot=True)
+sample.add_scans([9])
+sample.scans[9].energy_calibration_from_scan(sample.scans[7])
+sample.scans[9].plot()
+sample.scans[7].slice(save=True)
+sample.scans[7].project_XAS(remove_elastic=True, save=True)
+
+sample.add_scans([12,14])
+sample.scans[12].energy_calibration_from_scan(sample.scans[7])
+sample.scans[12].plot()
+sample.scans[14].energy_calibration_from_scan(sample.scans[7])
+sample.scans[14].plot()
+sample.combine_xes_scans([14,12,9], tag='testE')
+sample.scans[9000].auto_detect_ROI()
+sample.scans[9000].energy_calibration()
+sample.scans[9000].slice(sample.scans[9000].data['energies'], save = True)
+
+export_hd5(sample, Path("Sample_0001.h5"), save_raw = False)
+
+#Sample2
+
+sample = Sample(
+    electrode_id=2,
+    name="18v7hD",
+    cycle_info="1st cycle")
+
+
+
+sample.add_scans([3,4,5,6,7,8])
+sample.scans[6].plot(save=True)
+sample.scans[8].plot(save=True)
+
+sample.scans[7].auto_detect_ROI(Plot=True)
+sample.scans[7].energy_calibration(plot=True)
+sample.scans[7].slice(save=True)
+sample.scans[7].project_XAS(remove_elastic=True, save=True)
+
+sample.scans[3].energy_calibration_from_scan(sample.scans[7])
+sample.scans[4].energy_calibration_from_scan(sample.scans[7])
+sample.scans[5].energy_calibration_from_scan(sample.scans[7])
+sample.scans[3].plot()
+sample.scans[4].plot()
+sample.scans[5].plot()
+
+
+export_hd5(sample, Path("Sample_0002.h5"), save_raw = False)
+
+#sample4:
+
+sample = Sample(
+    electrode_id=4,
+    name="1VD",
+    cycle_info="1st cycle")
+
+
+
+sample.add_scans([5,6,7,8])
+sample.scans[6].plot(save=True)
+sample.scans[7].plot(save=True)
+
+sample.scans[8].auto_detect_ROI(Plot=True)
+sample.scans[8].energy_calibration(plot=True)
+sample.scans[8].slice(save=True)
+sample.scans[8].project_XAS(remove_elastic=True, save=True)
+
+
+sample.scans[5].energy_calibration_from_scan(sample.scans[8])
+sample.scans[5].plot()
+
+export_hd5(sample, Path("Sample_0004.h5"), save_raw = False)
+
+#sample 5
+
+sample = Sample(
+    electrode_id=5,
+    name="05VD",
+    cycle_info="1st cycle")
+
+
+
+sample.add_scans([3,4,5,6])
+sample.scans[6].plot(save=True)
+
+
+sample.scans[4].auto_detect_ROI(Plot=True)
+sample.scans[4].energy_calibration(plot=True)
+sample.scans[4].slice(save=True)
+sample.scans[4].project_XAS(remove_elastic=True, save=True)
+
+
+sample.scans[3].energy_calibration_from_scan(sample.scans[4])
+sample.scans[3].plot()
+sample.scans[5].energy_calibration_from_scan(sample.scans[4])
+sample.scans[5].plot()
+
+export_hd5(sample, Path("Sample_0005.h5"), save_raw = False)
+
+# sample 6
+
+sample = Sample(
+    electrode_id=6,
+    name="23VD",
+    cycle_info="1st cycle")
+
+
+
+sample.add_scans([2,12])
+sample.add_scans([8],energy= np.arange(2460, 2500.1, 0.2))
+sample.scans[12].plot(save=True)
+
+
+sample.scans[8].auto_detect_ROI(Plot=True)
+sample.scans[8].energy_calibration(plot=True)
+sample.scans[8].slice(save=True)
+sample.scans[8].project_XAS(remove_elastic=True, save=True)
+
+
+sample.scans[2].energy_calibration_from_scan(sample.scans[8])
+sample.scans[2].plot()
+
+
+export_hd5(sample, Path("Sample_0006.h5"), save_raw = False)
+
+#sample 7:
+
+sample = Sample(
+    electrode_id=7,
+    name="18V2HD",
+    cycle_info="1st cycle")
+
+
+
+sample.add_scans([3,4,5,6])
+sample.scans[5].plot(save=True)
+sample.scans[6].plot(save=True)
+
+
+sample.scans[4].auto_detect_ROI(Plot=True)
+sample.scans[4].energy_calibration(plot=True)
+sample.scans[4].slice(save=True)
+sample.scans[4].project_XAS(remove_elastic=True, save=True)
+
+
+sample.scans[3].energy_calibration_from_scan(sample.scans[4])
+sample.scans[3].plot()
+
+export_hd5(sample, Path("Sample_0007.h5"), save_raw = False)
+
+#sample 8:
+sample = Sample(
+    electrode_id=8,
+    name="23V1HC",
+    cycle_info="1st cycle")
+
+
+
+sample.add_scans([2,3])
+sample.scans[3].plot(save=True)
+sample.scans[3].plot(save=True)
+
+
+sample.scans[2].auto_detect_ROI(Plot=True)
+sample.scans[2].energy_calibration(plot=True)
+sample.scans[2].slice(save=True)
+sample.scans[2].project_XAS(remove_elastic=True, save=True)
+
+#sample 9:
+sample = Sample(
+    electrode_id=9,
+    name="23V5HC",
+    cycle_info="1st cycle")
+
+
+
+sample.add_scans([2,3])
+sample.scans[3].plot(save=True)
+sample.scans[3].plot(save=True)
+
+
+sample.scans[2].auto_detect_ROI(Plot=True)
+sample.scans[2].energy_calibration(plot=True)
+sample.scans[2].slice(save=True)
+sample.scans[2].project_XAS(remove_elastic=True, save=True)
+
+
+export_hd5(sample, Path("Sample_0009.h5"), save_raw = False)
+
+
+#sample 10:
+sample = Sample(
+    electrode_id=10,
+    name=" 3VC",
+    cycle_info="1st cycle")
+
+
+
+sample.add_scans([6,7])
+sample.scans[7].plot(save=True)
+sample.scans[7].plot(save=True)
+
+
+sample.scans[6].auto_detect_ROI(Plot=True)
+sample.scans[6].energy_calibration(plot=True)
+sample.scans[6].slice(save=True)
+sample.scans[6].project_XAS(remove_elastic=True, save=True)
+
+
+export_hd5(sample, Path("Sample_0010.h5"), save_raw = False)
+
