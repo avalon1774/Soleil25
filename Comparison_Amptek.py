@@ -56,6 +56,12 @@ def load_scans (sample_number: int,
                 df = pd.DataFrame(data, columns=["incident_energy", "intensity","intensity_2", "I01", "I02"]),
                 dfs.append(df)
 
+            if kind == 'Pilatus':
+                roi = 'ROI2'
+                data = scan_grp["ROIs"][roi]["XAS_clean"][:]
+                df = pd.DataFrame(data, columns=["incident_energy", "intensity"]),
+                dfs.append(df)
+
 
     energy_ax = dfs[0][0]["incident_energy"]
     summed_intensity = np.zeros_like(energy_ax)
@@ -128,45 +134,89 @@ def nomalize_xas(df: pd.Series, flat = False, plot = False) -> pd.Series:
         return norm_df
 
 
-def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Amptek', cmap_name='viridis'):
+def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Amptek', gauss = True, cmap_name='viridis'):
     cmap_name = 'managua'
-    fig, ax = plt.subplots(1, 1, figsize=(16, 10))
-    axin1 = ax.inset_axes([0.05, 0.55, 0.28, 0.35])
 
-    #cmap = cm.get_cmap(cmap_name, len(samples))
-    #norm = mcolors.Normalize(vmin=0, vmax=len(samples) - 1)
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 10))
+
+    if gauss:
+        fig2, axs2 = plt.subplots(3, 1, figsize=(7, 7), sharex=True)
+
+
+    #axin1 = ax.inset_axes([0.05, 0.55, 0.28, 0.35])
+
+    cmap = cm.get_cmap(cmap_name, len(samples))
+    norm = mcolors.Normalize(vmin=0, vmax=len(samples) - 1)
 
     for i, sample in enumerate(samples):
         temp_dict = {}
-        cmap = cm.get_cmap(cmap_name, len(scans[str(sample)]))
-        norm = mcolors.Normalize(vmin=0, vmax=len(scans[str(sample)]) - 1)
+        #cmap = cm.get_cmap(cmap_name, len(scans[str(sample)]))
+        #norm = mcolors.Normalize(vmin=0, vmax=len(scans[str(sample)]) - 1)
 
         for j, scan in enumerate(scans[str(sample)]):
             temp_dict[str(sample)] = [scan]
-            df = load_scans(sample, temp_dict, kind=kind, smooth=10)
+            df = load_scans(sample, temp_dict, kind=kind, smooth=15)
             df = nomalize_xas(df, plot=False, flat = True)
             data = df.to_numpy()
             if df is None:
                 continue
 
-            color = cmap(norm(j))
+            color = cmap(norm(i))
+
+            col = ['red', 'green', 'blue', 'orange', 'purple', 'brown', 'pink', 'gray']
+            #ax.plot(df.index, data/data[-1] + 0.3*i, label=df.name, color=color)
+            ax.plot(df.index, np.gradient(data) + 0.1 * i, label=df.name, color=color)
+            #axin1.plot(df.index, np.gradient(data), color=color)
+
+            #find the position of first peak in the derivative:
+            max_der = np.argmax(np.gradient(data))
+            e0 = df.index[max_der]
 
 
-            ax.plot(df.index, data/data[-1] + 0.3*j, label=df.name, color=color)
-            axin1.plot(df.index, np.gradient(data), color=color)
+
+            if gauss:
+                #fit N gaussians to the first part of the derivative and plot them iin ax_2
+
+                gauss_params, amp = fit_N_gaus(3, df.index, np.gradient(data), plot=True)
+                markers = ['o','d','s']
+                energies = [2469.2, 2471.0, 2472.0]
+                for n in range(3):
+
+                    ax2 = axs2[n]
+                    ax2.scatter(i, amp[f'g{n}_amplitude'], label=f'Gaussian {i+1}',color=color, marker=markers[n])
+
+
+
+                    #ax2.text(gauss_params[f'g{j}_center'], f'{gauss_params[f"g{j}_center"]:.2f}', fontsize=8, color=color)
+    if gauss:
+        for n in range(3):
+            ax2 = axs2[n]
+            ax2.set_ylabel("Intensity of peak (a.u)")
+            ax2.text(0.02, 0.95, f"{energies[n]} eV",
+                     transform=ax2.transAxes,
+                     fontsize=8,
+                     va="top", ha="left")
+            ax2.grid(True, alpha=0.3)
+
 
     ax.set_xlabel("Incident Energy (eV)")
     ax.set_ylabel("Intensity (counts)")
-    ax.set_title("Amptek XAS Spectra")
+
+    ax.set_title("Derivative of Pilatus XAS Spectra")
     #ax.legend(loc = 'lower right')
     ax.grid(True, alpha=0.3)
+    ax2.set_xlabel("Time [h]")
+
+
 
     battery_lines = [2471.1, 2473.4,2482.5]
     for line in battery_lines:
         ax.axvline(line, color='red', ls=':', alpha = 0.7, linewidth = 1)
 
-    axin1.set_xlim(2466, 2476)
-    axin1.set_title("Derivatives")
+    #axin1.set_xlim(2466, 2476)
+    ax.set_xlim(2460, 2490)
+    #axin1.set_title("Derivatives")
 
 
 def plot_xas_2D(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Amptek', cmap_name='viridis'):
@@ -185,14 +235,14 @@ def plot_xas_2D(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Am
         time = []
         for j, scan in enumerate(scans[str(sample)]):
             temp_dict[str(sample)] = [scan]
-            df = load_scans(sample, temp_dict, kind=kind, smooth=10)
+            df = load_scans(sample, temp_dict, kind=kind, smooth=20)
             df = nomalize_xas(df, plot=False, flat = False)
             time.append(j*0.75)
             data = df.to_numpy()
             if df is None:
                 continue
 
-            color = cmap(norm(j))
+            color = cmap(norm(i))
 
             all_xas.append(np.gradient(data))
             #all_xas.append(data)
@@ -202,7 +252,7 @@ def plot_xas_2D(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Am
         im = ax.pcolormesh(df.index, time, all_xas, cmap = 'managua',shading='nearest')
         fig.colorbar(im, ax=ax)
         ax.set_xlabel("Incident Energy (eV)")
-        ax.set_ylabel("Time (h)") #not exact
+        ax.set_ylabel("Sample") #not exact
         #ax.set_title("Amptek XAS Spectra")
         #ax.legend(loc = 'lower right')
         ax.grid(True, alpha=0.3)
@@ -211,18 +261,50 @@ def plot_xas_2D(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Am
         ax.set_title("Derivatives")
 
 
+def fit_N_gaus(N, x, y, plot = True):
+    "fit N gaussian fuction to the derivative of data"
+    models = []
+    for i in range(N):
+        g = GaussianModel(prefix=f'g{i}_')
+        models.append(g)
+    model = models[0]
+    for m in models[1:]:
+        model += m
+    params = model.make_params()
+    gauss_start_values = [2469.0, 2470.3, 2472.0]
+
+    for i in range(N):
+        params[f'g{i}_center'].set(value=gauss_start_values[i], min=gauss_start_values[i]-0.2, max=gauss_start_values[i]+0.2)
+        params[f'g{i}_sigma'].set(value=0.1, min=0.0001)
+        params[f'g{i}_amplitude'].set(value=1, min=0)
+    result = model.fit(y, params, x=x)
+    if plot:
+        fig, ax = plt.subplots(1, 1, figsize=(16, 10))
+        ax.plot(x, y, label='Data', color='black')
+        ax.plot(x, result.best_fit, label='Fit', color='red')
+        for i in range(N):
+            ax.plot(x, result.eval_components(x=x)[f'g{i}_'], label=f'Gaussian {i+1}')
+        ax.legend()
+        ax.set_xlabel("Energy [eV]")
+        ax.set_ylabel("Intensity")
+        ax.grid(True, alpha=0.3)
+
+    #return only position and amplitudes of peaks
+    return {f'g{i}_center': result.params[f'g{i}_center'].value for i in range(N)}, {f'g{i}_amplitude': result.params[f'g{i}_amplitude'].value for i in range(N)}
+
+
+
+#samples = [23]
+#scans = {'23': np.arange(14,136,5)}
+
+
+samples = [1,6,7,2,4,5,8,9,10]
+samples = [1,6,7,2,4,5,]
+scans = {'1': [8],         '6': [12],         '7': [6],         '2': [6],         '4': [7],         '5': [6],}
+
+#scans = {'1': [7],            '6': [8],           '7': [4],           '2': [7],           '4': [8],           '5': [4], '8':[2], '9':[2], '10': [6]}
 
 
 
 
-samples = [23]
-scans = {'23': np.arange(14,136,5)}
-
-
-
-
-
-
-
-
-plot_xas_2D(samples, scans, )
+plot_xas(samples, scans, kind='Amptek')

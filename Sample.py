@@ -389,7 +389,7 @@ class RIXSMap(BaseScan):
 
         """returns the slices of the map at energies specified in absorption_energy list"""
         if absorption_energy is None:
-            absorption_energy = [2471.1,2473.4, 2482.5, 2520] #values for bat 4
+            absorption_energy = [2469.8, 2471.1,2473.4, 2482.5, 2520] #values for bat 4
             #absorption_energy = [2460,2469.5,2471,2472,2481,2495] #default values
 
         pilatus_image = self.data['images']
@@ -1420,6 +1420,7 @@ sample.scans[2].auto_detect_ROI(Plot=True)
 sample.scans[2].energy_calibration(plot=True)
 sample.scans[2].slice(save=True)
 sample.scans[2].project_XAS(remove_elastic=True, save=True)
+export_hd5(sample, Path("Sample_0008.h5"), save_raw = False)
 
 #sample 9:
 sample = Sample(
@@ -1463,4 +1464,3 @@ sample.scans[6].project_XAS(remove_elastic=True, save=True)
 
 
 export_hd5(sample, Path("Sample_0010.h5"), save_raw = False)
-

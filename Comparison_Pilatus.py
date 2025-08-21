@@ -29,7 +29,7 @@ logger = logging.getLogger(__Analysis__)
 
 def load_scans(sample: int,
                 scans: list,
-                roi_id: Optional[int] = "ROI1",
+                roi_id: Optional[int] = "ROI2",
                 kind: str = 'XES_combined',
                 smooth: Optional[int] = 1) -> Optional[pd.Series]:
     """ load specified scans from the h5 files that combine all scans of a sample. return df with all the data interpolated onto the same energy axis if needed"""
@@ -59,6 +59,7 @@ def load_scans(sample: int,
 
                 roi_names = list(scan_grp["ROIs"])
                 roi_names = [roi_id]
+
                 for roi in roi_names:
                     excitation_energies = scan_grp["ROIs"][roi]["XES_slices"]["slice_excitation_energies"][:]
                     data = scan_grp["ROIs"][roi]["XES_slices"]["XES_slices"][:]
@@ -80,7 +81,7 @@ samples = {'1': [7],
            '4': [8],
            '5': [4],}
 
-
+samples = {'1': [7],            '6': [8],           '7': [4],           '2': [7],           '4': [8],           '5': [4], '8':[2], '9':[2], '10': [6]}
 #samples = {'23' : np.arange(9000,9020).tolist(),}
 
 
@@ -189,7 +190,7 @@ def smooth_data(x, y, window_length=5, polyorder=2):
 fig, axs = plt.subplots(len(energy_groups.items()), 2, figsize=(8, 10), sharex='col')
 
 limits = [(2465,2470),(2457,2467),(2457, 2469),(2457, 2469.3),(2457,2472),(2457, 2475)] #ex situ 6
-limits = [(2454,2469),(2457,2471),(2457, 2472),(2457, 2474),(2457,2472),(2457, 2475)]
+limits = [(2458,2467),(2454,2469),(2457,2471),(2457, 2472),(2457, 2474),(2457,2472),(2457, 2475)]
 y_limits = [23, 0.65, 0.5, 0.5, 0.5,0.5]
 
 #limits = [(2460,2468),(2457,2470.5),(2457, 2475),(2457, 2475),]
@@ -209,7 +210,7 @@ for i, (col_index, group) in enumerate(energy_groups.items()):
 
 
     for ind,(x, y, label) in enumerate(group):
-        x, y = smooth_data(x, y, window_length=5)
+        x, y = smooth_data(x, y, window_length=3)
         x,y = remove_background(x, y, energy = col_index, plot = False)
         norm_lower_limit = limits[i][0]
         norm_upper_limit = limits[i][1]

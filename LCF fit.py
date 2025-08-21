@@ -28,7 +28,7 @@ logger = logging.getLogger(__Analysis__)
 
 
 
-def load_scans(sample: int, scans: list, roi_id: Optional[int] = "ROI2", kind= 'XES_combined'):
+def load_scans(sample: int, scans: list, roi_id, kind= 'XES_combined'):
     path = f"Sample_{int(sample):04d}.h5"
     if not Path(path).exists():
         logger.error(f"Sample {int(sample):04d} does not exist")
@@ -52,10 +52,34 @@ def load_scans(sample: int, scans: list, roi_id: Optional[int] = "ROI2", kind= '
                     continue
 
                 #roi_names = list(scan_grp["ROIs"])
-                roi_names = [roi_id]  #for now look at only one roi. if more are needed, load them seperately
-                for roi in roi_names:
-                    excitation_energies = scan_grp["ROIs"][roi]["XES_slices"]["slice_excitation_energies"][:]
-                    data = scan_grp["ROIs"][roi]["XES_slices"]["XES_slices"][:]
+                #roi_names = [roi_id]  #for now look at only one roi. if more are needed, load them seperately
+                #if more than one roi, then combine them by adding them up acoss the shared x axis:
+                roi_names = roi_id
+                if len(roi_id) > 1:
+                    data = []
+
+                    for roi in roi_names:
+                        excitation_energies = scan_grp["ROIs"][roi]["XES_slices"]["slice_excitation_energies"][:]
+                        data_roi = scan_grp["ROIs"][roi]["XES_slices"]["XES_slices"][:]
+                        data.append(data_roi)
+
+
+                    dx = data[0][1,0] - data[0][0,0]
+                    x_reference = np.arange(max(arr[:,0][0] for arr in data), min(arr[:,0][-1] for arr in data), step = dx) #coomon part of the x axis for all roias
+
+                    #extrapolate to the common x axis and combine ROI1 + ROI2 for all column
+                    combined_data = []
+                    for i in range(len(data[0][0])):
+                        combined_column = np.zeros_like(x_reference)
+                        for roi_data in data:
+                            y_interpolated = np.interp(x_reference, roi_data[:,0], roi_data[:,i])
+                            combined_column += y_interpolated
+                        combined_data.append(combined_column)
+
+                    data = np.column_stack([x_reference] + combined_data[1:])
+
+
+
                     columns = ["emission_energy"] + excitation_energies.tolist()
 
                     df = pd.DataFrame(data, columns=columns),
@@ -64,17 +88,31 @@ def load_scans(sample: int, scans: list, roi_id: Optional[int] = "ROI2", kind= '
                     df = pd.DataFrame(data=data[:, 1:], index=pd.Series(data[:,0], name="energy [eV]"),columns=excitation_energies)
                     #df.attrs["name"] = sample_name + ": Sample " + str(sample) + f"({scan_number})"
                     df.attrs["name"] = sample_name
+
+
+                else:
+                    for roi in roi_names:
+                        excitation_energies = scan_grp["ROIs"][roi]["XES_slices"]["slice_excitation_energies"][:]
+                        data = scan_grp["ROIs"][roi]["XES_slices"]["XES_slices"][:]
+                        columns = ["emission_energy"] + excitation_energies.tolist()
+
+                        df = pd.DataFrame(data, columns=columns),
+                        dfs.append(df)
+
+                        df = pd.DataFrame(data=data[:, 1:], index=pd.Series(data[:,0], name="energy [eV]"),columns=excitation_energies)
+                        #df.attrs["name"] = sample_name + ": Sample " + str(sample) + f"({scan_number})"
+                        df.attrs["name"] = sample_name
     return df
 
 def load_by_energy(samples, plot_sample: bool = False, ):
     """ Load all scans and group them by energy. requires them to have the same enegies"""
     energy_groups = {}
-
+    roi_id = ['ROI2' ]  # can be a list of ROIs to load, if more than one is needed
     for sample in list(samples.keys()):
 
         if len(samples[sample])>1:
             for scan in samples[sample]:
-                df = load_scans(sample, [scan])
+                df = load_scans(sample, [scan], roi_id = roi_id)
                 if plot_sample:
                     fig, ax = plt.subplots(1, 1, figsize=(16, 10))
                     df.plot(ax=ax)
@@ -95,7 +133,7 @@ def load_by_energy(samples, plot_sample: bool = False, ):
 
         else:
 
-            df = load_scans(sample, samples[sample])
+            df = load_scans(sample, samples[sample],roi_id = roi_id)
 
             if plot_sample:
                 fig, ax = plt.subplots(1, 1, figsize=(16, 10))
@@ -125,19 +163,19 @@ samples = {'1': [7],
            '4': [8],
            '5': [4],}
 
-samples = {'23' : np.arange(9000,9020).tolist(),}
+#samples = {'23' : np.arange(9000,9020).tolist(),}
 
-#references = {'1': [7],
-#           '5': [4],}
+references = {'1': [7],
+           '5': [4],}
 
-references = {'23': [9000,9006]}
+#references = {'23': [9001,9006]}
 
 energy_groups = load_by_energy(samples, plot_sample=False,)
 reference_groups = load_by_energy(references, plot_sample=False)
 
 def remove_background(x,y,energy=None, plot = False):
     "fit a combination of linear background and a gaussian to the data and subtract the linear function from the data"
-    mask = ((x > 2445) & (x < 2450)) | ((x > 2470) & (x < 2480)) #roi2
+    mask = ((x > 2445) & (x < 2450)) | ((x > 2470) & (x < 2580)) #roi2
     #mask = ((x > 2435) & (x < 2450)) | ((x > 2470) & (x < 2480)) #roi1
 
     x_fit = x[mask]
@@ -167,6 +205,7 @@ def remove_background(x,y,energy=None, plot = False):
         ax.plot(x,y, color = 'black', label='Original Data')
         ax.plot(x, line, color='red', label='Linear Background')
         ax.plot(x, gauss, color='blue', label='Gaussian Fit')
+        ax.plot(x, y_corrected, color='purple', label='Removed data')
         ax.legend()
         ax.grid(True, alpha=0.3)
 
@@ -206,8 +245,8 @@ def smooth_data(x, y, window_length=6, polyorder=2):
 
 
 def preprocess(x, y, energy, limits: Optional[tuple] = None):
-    x,y = smooth_data(x, y)
-    x,y = remove_background(x,y,energy)
+    #x,y = smooth_data(x, y)
+    x,y = remove_background(x,y,energy, plot=False)
     x,y = normalize_intensity(x,y, limits=limits)
 
     return x,y
@@ -222,8 +261,8 @@ def LCF (energy_groups, reference_groups, plot: bool = True):
     each group has a key which is energy. then a number of tuples with (x, y, label) where x is the energy, y is the intensity and label is the sample name, all at that exact incident energy.
     """
     results = {}
-    limits = [(2454, 2469), (2457, 2471), (2457, 2472), (2457, 2474)]
-    y_limits = [23, 0.65, 0.5, 0.5, 0.5, 0.5]
+    limits = [(2460, 2467), (2457, 2471), (2457, 2472), (2457, 2474),(2457, 2472), (2457, 2474)]
+    y_limits = [23, 0.65, 0.5, 0.5, 0.5, 0.5,0.5, 0.5]
 
     fig, axs = plt.subplots(len(energy_groups),2, figsize=(7, 10), sharex='col')
 
@@ -312,7 +351,7 @@ def LCF (energy_groups, reference_groups, plot: bool = True):
     #ax2.set_xticks(range(len(labels)))
     #ax2.set_xticklabels(labels)
     #fig.suptitle('1st cycle: ROI 2')
-    fig.suptitle('Battery (2.7 mg S: ROI 2)')
+    fig.suptitle('Battery (2.65 mg S: ROI 2)')
     plt.tight_layout()
 
 
