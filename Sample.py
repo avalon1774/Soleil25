@@ -790,6 +790,7 @@ class RIXSMap(BaseScan):
             ax = axs[0, 1]
             ax.grid(visible=True, alpha=0.3)
             ax.set_title(f'Projected cleaned XAS for ROIs')
+            ax.axvline(RIXS_map[:, :-15], color = red)
             ax.plot(energy, cleaned_xas_spectrum, label=f'Projected XAS for ROI {roi[0]}-{roi[1]}')
             ax.set_xlabel('Incident Energy (eV)')
             ax.set_ylabel('Intensity')
@@ -2030,10 +2031,17 @@ class RIXSMap(BaseScan):
 
             cleaned_xas_spectrum = np.sum(RIXS_map[:, :-N], axis=1)  # projection onto incident energy axis while omitting the last 5px
 
+
             ax = axs[0, 1]
             ax.grid(visible=True, alpha=0.3)
             ax.set_title(f'Projected cleaned XAS for ROIs')
-            ax.plot(energy, cleaned_xas_spectrum, label=f'Projected XAS for ROI {roi[0]}-{roi[1]}')
+            ax.plot(energy, cleaned_xas_spectrum/max(cleaned_xas_spectrum), label=f'Projected XAS for ROI {roi[0]}-{roi[1]}')
+
+
+
+            ax.plot(energy, np.sum(RIXS_map[:, 114:120], axis=1))
+
+            #ax.axvline(energy[201])
             ax.set_xlabel('Incident Energy (eV)')
             ax.set_ylabel('Intensity')
             ax.legend()
@@ -2490,19 +2498,23 @@ def export_hd5(sample: 'Sample', filepath: Path, xes_series = None, save_raw = F
 
 
 
+#Sample1:
+
+
 sample = Sample(
-    electrode_id=35,
-    name=" 23V5hC",
-    cycle_info="1st cycle (round 2)")
+    electrode_id=7,
+    name="18V2HD",
+    cycle_info="1st cycle")
 
 
 
-sample.add_scans([1,2])
-#sample.scans[19].data["position"]= E
-sample.scans[1].plot(save=True)
-sample.scans[2].plot(save=True)
-#make an x axis for te enery with a certain number of steps
+
+sample.add_scans([4])
+sample.scans[4].auto_detect_ROI(Plot=True)
+sample.scans[4].energy_calibration(plot=True)
+#sample.scans[7].slice(save=True)
+sample.scans[4].project_XAS(remove_elastic=True, save=False)
 
 
-export_hd5(sample, Path("Sample_0034.h5"), save_raw = False)
 
+export_hd5(sample, Path("Sample_0007_test.h5"), save_raw = False)
