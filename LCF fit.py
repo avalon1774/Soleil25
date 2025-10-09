@@ -156,12 +156,12 @@ def load_by_energy(samples, plot_sample: bool = False, ):
     return energy_groups
 
 
-samples = {'1': [7],
-           '6': [8],
-           '7': [4],
-           '2': [7],
-           '4': [8],
-           '5': [4],}
+samples = {'12': [5],
+           '13': [2],
+           '15': [3],
+           '16': [3],
+           '17': [6],
+           '18': [8],}
 
 #samples = {'23' : np.arange(9000,9020).tolist(),}
 

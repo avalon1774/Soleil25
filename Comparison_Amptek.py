@@ -156,7 +156,7 @@ def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Ampte
 
         for j, scan in enumerate(scans[str(sample)]):
             temp_dict[str(sample)] = [scan]
-            df = load_scans(sample, temp_dict, kind=kind, smooth=15)
+            df = load_scans(sample, temp_dict, kind=kind, smooth=10)
             df = nomalize_xas(df, plot=False, flat = True)
             data = df.to_numpy()
             if df is None:
@@ -165,8 +165,8 @@ def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Ampte
             color = cmap(norm(i))
 
             col = ['red', 'green', 'blue', 'orange', 'purple', 'brown', 'pink', 'gray']
-            #ax.plot(df.index, data/data[-1] + 0.3*i, label=df.name, color=color)
-            ax.plot(df.index, np.gradient(data) + 0.1 * i, label=df.name, color=color)
+            ax.plot(df.index, data/data[-1] + 0.8*i, label=df.name, color=color)
+            #ax.plot(df.index, np.gradient(data) + 0.1 * i, label=df.name, color=color)
             #axin1.plot(df.index, np.gradient(data), color=color)
 
             #find the position of first peak in the derivative:
@@ -178,7 +178,7 @@ def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Ampte
             if gauss:
                 #fit N gaussians to the first part of the derivative and plot them iin ax_2
 
-                gauss_params, amp = fit_N_gaus(3, df.index, np.gradient(data), plot=True)
+                gauss_params, amp = fit_N_gaus(3, df.index, np.gradient(data), plot=False)
                 markers = ['o','d','s']
                 energies = [2469.2, 2471.0, 2472.0]
                 for n in range(3):
@@ -215,7 +215,7 @@ def plot_xas(samples: List[int], scans: Dict[str, List[int]], kind: str = 'Ampte
         ax.axvline(line, color='red', ls=':', alpha = 0.7, linewidth = 1)
 
     #axin1.set_xlim(2466, 2476)
-    ax.set_xlim(2460, 2490)
+    #ax.set_xlim(2460, 2490)
     #axin1.set_title("Derivatives")
 
 
@@ -297,14 +297,18 @@ def fit_N_gaus(N, x, y, plot = True):
 #samples = [23]
 #scans = {'23': np.arange(14,136,5)}
 
-
-samples = [21,1,6,7,2,4,5,8,9,10]
-#samples = [1,6,7,2,4,5,]
-#scans = {'1': [8],         '6': [12],         '7': [6],         '2': [6],         '4': [7],         '5': [6],}
-
-scans = {'21':[65], '1': [7],            '6': [8],           '7': [4],           '2': [7],           '4': [8],           '5': [4], '8':[2], '9':[2], '10': [6]}
+#samples = [22]
+#scans = {'22': np.arange(47,90,7)}
 
 
+#samples = [21,1,6,7,2,4,5,8,9,10]
+samples = [1,6,7,2,4,5,]
+scans = {'1': [8],         '6': [12],         '7': [6],         '2': [6],         '4': [7],         '5': [6],}
 
 
-plot_xas(samples, scans, kind='Pilatus')
+#scans = {'21':[65], '1': [7],            '6': [8],           '7': [4],           '2': [7],           '4': [8],           '5': [4], '8':[2], '9':[2], '10': [6]}
+#samples = [1,6,33,27,4,5,30]
+#scans = { '1': [8],         '6': [12],         '33': [3],         '27': [4],         '4': [7],         '5': [6], '30':[1],}
+
+
+plot_xas(samples, scans, kind='Amptek')
